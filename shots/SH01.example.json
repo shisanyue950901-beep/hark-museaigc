@@ -1,0 +1,9 @@
+{
+  "shotId": "SH01",
+  "prompt": "以上传的图片作为视频第一帧。夜间教室，镜头缓慢推近。少年低头看手机，屏幕冷光照亮脸；约 2 秒处他抬眼，察觉到异样，眼神凝住。窗外冷蓝月光，桌上一盏暖色台灯。日系赛璐璐动画质感，画面内无文字、无水印。",
+  "firstFrame": "SH01_firstframe.png",
+  "firstFrameSHA256": "",
+  "aspect": "16:9",
+  "durationRequestSeconds": 5,
+  "sendAllowed": false
+}

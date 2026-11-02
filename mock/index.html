@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- 测试用模拟页：仿 Muse 网页的 DOM 结构（选择器取自 muse2api 公开代码，未经真站核实）。
+     ?scenario=ok|refuse|cover_only|upload_fail|quota|dialog|old_video|no_start -->
+<html lang="zh"><head><meta charset="utf-8"><title>mock muse</title></head>
+<body>
+<main class="hatch-chat-scroll" id="chat"></main>
+<form id="composer">
+  <div data-testid="hatch-composer-placeholder-overlay">消息</div>
+  <div id="previews"></div>
+  <input type="file" accept="image/*" id="file">
+  <textarea placeholder="消息" id="ta"></textarea>
+  <button type="button" aria-label="发送" id="send" disabled>↑</button>
+</form>
+<script>
+const q = new URLSearchParams(location.search);
+const sc = q.get('scenario') || 'ok';
+const delay = +(q.get('delay') || 600);
+window.__clicks = 0;
+const chat = document.getElementById('chat');
+const ta = document.getElementById('ta');
+const send = document.getElementById('send');
+const file = document.getElementById('file');
+const previews = document.getElementById('previews');
+
+function sync() { send.disabled = !ta.value.trim(); }
+ta.addEventListener('input', sync);
+
+if (sc === 'quota') document.body.insertAdjacentHTML('beforeend', '<p>今日次数已用完，升级到 Max</p>');
+if (sc === 'dialog') document.body.insertAdjacentHTML('beforeend', '<div role="dialog">提示</div>');
+
+function addAttachment(kind, src) {
+  const d = document.createElement('div');
+  d.setAttribute('data-testid', 'hatch-chat-attachment-presentation-' + kind + '-' + Math.random().toString(36).slice(2, 8));
+  if (kind === 'video') { const v = document.createElement('video'); v.src = src; d.appendChild(v); }
+  else { const i = document.createElement('img'); i.src = src; d.appendChild(i); }
+  chat.appendChild(d);
+  return d;
+}
+function agentSays(text) {
+  const b = document.createElement('div');
+  b.className = 'hatch-chat-groupable-bubble hatch-agent-bubble-bg';
+  b.innerText = text; chat.appendChild(b);
+}
+if (sc === 'old_video') addAttachment('video', '/sample.mp4?old=1');
+
+file.addEventListener('change', () => {
+  if (sc === 'upload_fail') { file.value = ''; return; }
+  for (const f of file.files) {
+    const p = document.createElement('span');
+    p.innerHTML = '<img alt="preview"><button type="button" aria-label="移除附件">×</button>';
+    p.querySelector('button').onclick = () => p.remove();
+    previews.appendChild(p);
+  }
+  file.value = '';   // 真站会清空 input.files，所以不能靠它核对
+});
+
+send.addEventListener('click', async () => {
+  window.__clicks++;
+  if (sc === 'no_start') return;
+  ta.value = ''; sync(); previews.innerHTML = '';
+  const stop = document.createElement('button');
+  stop.setAttribute('data-testid', 'hatch-composer-stop-button'); stop.type = 'button'; stop.innerText = '■';
+  document.getElementById('composer').appendChild(stop);
+  await new Promise(r => setTimeout(r, delay));
+  if (sc === 'refuse') { stop.remove(); agentSays('抱歉，视频没生成成功。'); return; }
+  const d = addAttachment('image', 'data:image/gif;base64,R0lGODlhAQABAAAAACw=');  // 先出封面
+  if (sc === 'cover_only') { stop.remove(); return; }
+  await new Promise(r => setTimeout(r, delay));
+  const blob = await (await fetch('/sample.mp4')).blob();
+  const v = document.createElement('video'); v.src = URL.createObjectURL(blob);
+  d.setAttribute('data-testid', d.getAttribute('data-testid').replace('-image-', '-video-'));
+  d.appendChild(v);
+  agentSays('视频已生成');
+  stop.remove();
+});
+</script>
+</body></html>

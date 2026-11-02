@@ -1,0 +1,19 @@
+[project]
+name = "hark-museaigc"
+version = "0.1.0"
+description = "单账号、一镜一发的 Muse 网页出片工具（首帧上传、一次发送、MP4 回执与 SHA）"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["playwright==1.49.1"]
+
+[project.optional-dependencies]
+test = ["pytest==8.3.4"]
+
+[project.scripts]
+museaigc = "museaigc.cli:main"
+
+[tool.setuptools]
+packages = ["museaigc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
