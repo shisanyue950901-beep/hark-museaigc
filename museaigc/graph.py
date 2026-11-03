@@ -242,14 +242,16 @@ class Graph:
         if not n or n["type"] not in ("keyframe", "video"):
             raise GraphError(f"{nid}: 只有 keyframe/video 节点能生成")
         prm = n.get("params") or {}
-        if prm.get("provider") != "muse2api":
-            raise GraphError(f"{nid}: 节点参数 provider 不是 muse2api")
+        if prm.get("provider") not in ("muse2api", "muse-open"):
+            raise GraphError(f"{nid}: 节点参数 provider 需为 muse2api 或 muse-open")
         key = self.key(nid)
         if key is None:
             raise GraphError(f"{nid}: 上游未完成")
         if not prm.get("prompt"):
             raise GraphError(f"{nid}: 缺少 prompt")
-        tasks = tasks or TaskRunner(self)
+        if tasks is None:
+            from .muse2api import Client
+            tasks = TaskRunner(self, Client(api="open" if prm["provider"] == "muse-open" else "openai"))
         ins = [self.abspath(self.output(u)["file"]) for u in self.inputs(nid)]
         if n["type"] == "keyframe":
             rec = tasks.start_or_resume(nid, "image", lambda idem: tasks.client.submit_image(

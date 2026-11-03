@@ -192,3 +192,93 @@ def test_media_url_rewrites_server_loopback():
     assert c.media_url("/v1/media/a.webp") == "https://x.trycloudflare.com/v1/media/a.webp"
     assert c.media_url("https://cdn.example.com/a.webp") == "https://cdn.example.com/a.webp"
     assert Client("http://127.0.0.1:8787", "k").media_url("http://127.0.0.1:8787/v1/media/a") == "http://127.0.0.1:8787/v1/media/a"
+
+
+class FakeOpen:
+    """假产品 API（/api/open/v1）：multipart 上传，task_id，pending→processing→done。"""
+    def __init__(self, png, used=0, quota=30):
+        self.posts, self.polls, self.png, self.used, self.quota = [], {}, png, used, quota
+        fake = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _j(self, code, obj):
+                b = json.dumps(obj).encode()
+                self.send_response(code); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+            def do_POST(self):
+                assert self.headers["Authorization"] == "Bearer k"
+                raw = self.rfile.read(int(self.headers["Content-Length"]))
+                fake.posts.append((self.path, self.headers["Content-Type"], raw))
+                fake.used += 1
+                self._j(200, {"task_id": f"o{len(fake.posts)}", "status": "pending", "poll_url": "x"})
+
+            def do_GET(self):
+                if self.path == "/api/open/v1/points":
+                    return self._j(200, {"points": 10, "daily_quota": fake.quota, "today_used": fake.used})
+                if self.path.startswith("/files/"):
+                    src = SAMPLE if self.path.endswith(".mp4") else fake.png
+                    self.send_response(200); self.send_header("Content-Type", "application/octet-stream")
+                    self.end_headers(); self.wfile.write(open(src, "rb").read()); return
+                tid = self.path.rsplit("/", 1)[1]
+                n = fake.polls[tid] = fake.polls.get(tid, 0) + 1
+                if n < 2:
+                    return self._j(200, {"task_id": tid, "status": "processing", "result": None})
+                ext = ".mp4" if fake.posts[int(tid[1:]) - 1][0].endswith("img2video") else ".webp"
+                return self._j(200, {"task_id": tid, "status": "done",
+                                     "result": {"urls": [f"http://127.0.0.1:8787/files/{tid}{ext}"]}})
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+
+def test_open_api_img2img_multipart_and_video(g, tmp_path):  # noqa: F811
+    png = str(tmp_path / "o.png"); _png(png, "orange")
+    f = FakeOpen(png)
+    try:
+        use_muse2api(g); g.run("C01"); g.run("LOC01")
+        t = TaskRunner(g, Client(f.base, "k", api="open"), poll_s=0.01, timeout_s=5)
+        rec = g.generate("SH01_kf", tasks=t)
+        path, ctype, raw = f.posts[0]
+        assert path == "/api/open/v1/images/img2img" and ctype.startswith("multipart/form-data")
+        assert raw.count(b'name="image"') == 2 and b'name="prompt"' in raw
+        assert rec["state"] == "DONE" and rec["file"].endswith(".webp")
+        g.pick("SH01_kf", rec["file"])
+        g.nodes()["SH01_v"]["params"]["sendAllowed"] = True; g.save()
+        r = g.generate("SH01_v", tasks=t, send=True)
+        assert f.posts[1][0] == "/api/open/v1/videos/img2video" and f.posts[1][2].count(b'name="image"') == 1
+        assert r["take"] == "o2" and g.status()["SH01_v"] == "DONE"
+    finally:
+        f.httpd.shutdown()
+
+
+def test_open_api_refuses_when_quota_used_up(g, tmp_path):  # noqa: F811
+    png = str(tmp_path / "o.png"); _png(png)
+    f = FakeOpen(png, used=30, quota=30)
+    try:
+        use_muse2api(g); g.run("C01"); g.run("LOC01")
+        t = TaskRunner(g, Client(f.base, "k", api="open"), poll_s=0.01, timeout_s=5)
+        with pytest.raises(Muse2APIError, match="额度"):
+            g.generate("SH01_kf", tasks=t)
+        assert f.posts == []
+    finally:
+        f.httpd.shutdown()
+
+
+def test_quota_refusal_leaves_no_ambiguous_record(g, tmp_path):  # noqa: F811
+    png = str(tmp_path / "o.png"); _png(png)
+    f = FakeOpen(png, used=30, quota=30)
+    try:
+        use_muse2api(g); g.run("C01"); g.run("LOC01")
+        t = TaskRunner(g, Client(f.base, "k", api="open"), poll_s=0.01, timeout_s=5)
+        with pytest.raises(Muse2APIError):
+            g.generate("SH01_kf", tasks=t)
+        assert t.records("SH01_kf") == []
+        f.used = 0
+        assert g.generate("SH01_kf", tasks=t)["state"] == "DONE"   # 额度恢复后可正常提交
+    finally:
+        f.httpd.shutdown()

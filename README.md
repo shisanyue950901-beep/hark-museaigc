@@ -113,3 +113,11 @@ pip install -e ".[test]" && python -m playwright install chromium && python -m p
 - 任务失败即为终态，重来同样要 `--new-attempt`。
 - 结果下载到 `.museaigc/out/<节点>/`，记录字节数和 SHA-256。首帧只作为候选，需人工 pick；视频直接绑定为节点输出，下游可接尾帧接力。
 - 接口按 muse2api README 编写（`/v1/images/tasks`、`/v1/videos`），对真实实例 NOT_VERIFIED。muse2api 的多账号池、在线升级等功能由你自行决定是否开启，本工具不依赖它们。
+
+### 产品 API（/api/open/v1）
+
+如果你的服务同时提供 `/api/open/v1`（异步任务：pending → processing → done|failed），把节点的 `provider` 设为 `"muse-open"` 即可：
+- 有参考图时，图生图走 `images/img2img`、首帧生视频走 `videos/img2video`，都用 multipart 上传本地文件；没有参考图时走 `images` 或 `videos`。
+- 每次提交前先查 `points`：当日额度用完或积分为 0 就不提交，也不留任务记录。
+- 服务端明确拒收（4xx）的提交记为 FAILED；断线、5xx、超时记为结果不明，**不自动补发**。
+- 轮询走 `tasks/{task_id}`。结果地址从 `result` 里自动查找；写死为 127.0.0.1 的地址会改走你配置的 MUSE2API_BASE。

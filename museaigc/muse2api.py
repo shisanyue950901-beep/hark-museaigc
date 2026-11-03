@@ -31,7 +31,8 @@ FAILED = {"failed", "error", "cancelled", "canceled"}
 
 
 class Muse2APIError(Exception):
-    pass
+    def __init__(self, msg, status: int | None = None):
+        super().__init__(msg); self.status = status
 
 
 def api_key() -> str:
@@ -59,18 +60,44 @@ def data_url(path: str) -> str:
         return f"data:{mime};base64," + base64.b64encode(f.read()).decode()
 
 
+def _multipart(fields: dict, files: list[tuple[str, str]]):
+    """fields: 文本字段；files: [(字段名, 本地路径)]。返回 (body, content_type)。"""
+    bd = "----museaigc" + uuid.uuid4().hex
+    out = []
+    for k, v in fields.items():
+        out += [f"--{bd}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n".encode(),
+                str(v).encode(), b"\r\n"]
+    for k, path in files:
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        with open(path, "rb") as f:
+            data = f.read()
+        out += [f"--{bd}\r\nContent-Disposition: form-data; name=\"{k}\"; "
+                f"filename=\"{os.path.basename(path)}\"\r\nContent-Type: {mime}\r\n\r\n".encode(),
+                data, b"\r\n"]
+    out.append(f"--{bd}--\r\n".encode())
+    return b"".join(out), f"multipart/form-data; boundary={bd}"
+
+
 class Client:
-    def __init__(self, base: str | None = None, key: str | None = None, timeout: float = 60):
+    """api="openai"：/v1/images/tasks、/v1/videos（muse2api 风格）。
+    api="open"：/api/open/v1/*（产品 API，异步任务，pending→processing→done|failed）。"""
+
+    def __init__(self, base: str | None = None, key: str | None = None, timeout: float = 60,
+                 api: str | None = None):
         self.base = (base or base_url()).rstrip("/")
         self.key = key or api_key()
         self.timeout = timeout
+        self.api = api or os.environ.get("MUSE2API_API", "openai")
 
-    def _req(self, method: str, path: str, body: dict | None = None, headers: dict | None = None):
+    def _req(self, method: str, path: str, body=None, headers: dict | None = None):
         url = path if path.startswith("http") else self.base + path
-        data = json.dumps(body).encode() if body is not None else None
         h = {"Authorization": f"Bearer {self.key}", **(headers or {})}
-        if data is not None:
-            h["Content-Type"] = "application/json"
+        if isinstance(body, tuple):          # 预编码的 multipart
+            data, h["Content-Type"] = body
+        elif body is not None:
+            data = json.dumps(body).encode(); h["Content-Type"] = "application/json"
+        else:
+            data = None
         req = urllib.request.Request(url, data=data, method=method, headers=h)
         host = urllib.parse.urlsplit(url).hostname or ""
         opener = (urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -82,11 +109,34 @@ class Client:
                 return r.status, (json.loads(raw) if "json" in ctype and raw else raw)
         except urllib.error.HTTPError as e:
             msg = e.read().decode(errors="replace")[:300]
-            raise Muse2APIError(f"HTTP {e.code} {path}: {msg}") from None
+            raise Muse2APIError(f"HTTP {e.code} {path}: {msg}", e.code) from None
         except urllib.error.URLError as e:
             raise Muse2APIError(f"连不上 muse2api（{self.base}）：{e.reason}") from None
 
+    def check_quota(self):
+        """产品 API：提交前查额度，用完就不提交。"""
+        if self.api != "open":
+            return None
+        _, j = self._req("GET", "/api/open/v1/points")
+        if j.get("daily_quota") is not None and j.get("today_used", 0) >= j["daily_quota"]:
+            raise Muse2APIError(f"今日额度已用完（{j['today_used']}/{j['daily_quota']}），不提交")
+        if j.get("points") is not None and j["points"] <= 0:
+            raise Muse2APIError("积分为 0，不提交")
+        return j
+
+    def _open_submit(self, path_json, path_mp, prompt, refs, extra, idem):
+        hdr = {"Idempotency-Key": idem}
+        if refs:
+            fields = {"prompt": prompt, **{k: v for k, v in extra.items() if v is not None}}
+            _, j = self._req("POST", path_mp, _multipart(fields, [("image", p) for p in refs]), hdr)
+        else:
+            _, j = self._req("POST", path_json, {"prompt": prompt, **extra}, hdr)
+        return j.get("task_id") or j["id"]
+
     def submit_image(self, prompt, refs, size, idem):
+        if self.api == "open":
+            return self._open_submit("/api/open/v1/images", "/api/open/v1/images/img2img",
+                                     prompt, refs, {"size": size}, idem)
         body = {"model": "muse-image", "prompt": prompt, "size": size, "response_format": "url"}
         if refs:
             body["images"] = [{"url": data_url(p)} for p in refs]
@@ -94,11 +144,17 @@ class Client:
         return j["id"]
 
     def submit_video(self, prompt, frame, duration, size, idem):
+        if self.api == "open":
+            return self._open_submit("/api/open/v1/videos", "/api/open/v1/videos/img2video",
+                                     prompt, [frame], {"duration": duration, "size": size}, idem)
         body = {"prompt": prompt, "duration": duration, "size": size, "images": [{"url": data_url(frame)}]}
         _, j = self._req("POST", "/v1/videos", body, {"Idempotency-Key": idem})
         return j["id"]
 
     def poll(self, kind: str, tid: str) -> dict:
+        if self.api == "open":
+            _, j = self._req("GET", f"/api/open/v1/tasks/{tid}")
+            return j
         _, j = self._req("GET", f"/v1/{'images/tasks' if kind == 'image' else 'videos'}/{tid}")
         return j
 
@@ -121,14 +177,26 @@ class Client:
         os.replace(dest + ".part", dest)
 
 
-def result_url(j: dict) -> str | None:
-    if isinstance(j.get("result"), dict) and j["result"].get("url"):
-        return j["result"]["url"]
-    if j.get("url"):
-        return j["url"]
-    d = j.get("data")
-    if isinstance(d, list) and d and d[0].get("url"):
-        return d[0]["url"]
+def result_url(j) -> str | None:
+    """在 result / url / data / urls 里找第一个媒体地址（两种 API 的结果形状不同）。"""
+    if isinstance(j, str):
+        return j if (j.startswith("http") or j.startswith("/")) else None
+    if isinstance(j, list):
+        for x in j:
+            u = result_url(x)
+            if u:
+                return u
+        return None
+    if not isinstance(j, dict):
+        return None
+    for k in ("url", "video_url", "image_url", "file_url"):
+        if isinstance(j.get(k), str) and j[k]:
+            return j[k]
+    for k in ("result", "data", "urls", "images", "videos", "outputs", "files"):
+        if k in j:
+            u = result_url(j[k])
+            if u:
+                return u
     return None
 
 
@@ -174,11 +242,18 @@ class TaskRunner:
             if last["state"] == "FAILED":
                 raise Muse2APIError(f"{nid}: 任务 {last.get('taskId')} 已失败：{last.get('error')}；"
                                     "要重来请加 --new-attempt")
+        self.client.check_quota()          # 额度不够就不建记录、不提交
         rec = {"node": nid, "kind": kind, "attempt": (last["attempt"] + 1 if last else 1),
                "key": key, "idempotencyKey": str(uuid.uuid4()), "state": "SUBMITTING",
                "createdAt": time.time()}
         self._save(rec)
-        rec["taskId"] = submit(rec["idempotencyKey"])
+        try:
+            rec["taskId"] = submit(rec["idempotencyKey"])
+        except Muse2APIError as e:
+            if e.status and 400 <= e.status < 500 and e.status != 408:
+                # 服务端明确拒收：确定没有出片，记为失败
+                rec.update(state="FAILED", error=str(e)[:300]); self._save(rec)
+            raise                              # 其余（断线、5xx、超时）保持 SUBMITTING = 结果不明
         rec["state"] = "SUBMITTED"
         self._save(rec)
         return self._wait(rec, kind)
