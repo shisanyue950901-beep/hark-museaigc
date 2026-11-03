@@ -27,7 +27,7 @@ import uuid
 from .shotcard import sha256_file
 
 DONE = {"completed", "succeeded", "success", "done"}
-FAILED = {"failed", "error", "cancelled", "canceled"}
+FAILED = {"failed", "error", "cancelled", "canceled", "interrupted", "timeout", "timed_out", "expired", "aborted"}
 
 
 class Muse2APIError(Exception):
