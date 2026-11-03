@@ -1,6 +1,6 @@
 [project]
 name = "hark-museaigc"
-version = "0.5.0"
+version = "0.6.0"
 description = "单账号、一镜一发的 Muse 网页出片工具（首帧上传、一次发送、MP4 回执与 SHA）"
 requires-python = ">=3.10"
 license = { text = "MIT" }

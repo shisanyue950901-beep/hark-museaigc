@@ -209,6 +209,14 @@ def make_app_handler(app: App, tasks_factory=None):
                 if not app.current:
                     return self._redirect("/")
                 return self._file(os.path.join(os.path.dirname(__file__), "canvas.html"))
+            if u.path.startswith("/api/director/") and app.current:
+                from . import director
+                from .graph import Graph
+                d = Graph.load(app.graph_path()).dir
+                if u.path == "/api/director/profile":
+                    return self._json(200, {"text": director.load_profile(d)})
+                if u.path == "/api/director/feedback":
+                    return self._json(200, {"items": director.recent_feedback(d, 50)})
             if u.path == "/api/batch" and app.current:
                 return self._json(200, {"jobs": self._jobs()})
             if u.path == "/api/app/state":
@@ -258,12 +266,20 @@ def make_app_handler(app: App, tasks_factory=None):
                     j = json.loads(self._app_body() or b"{}")
                     if not (j.get("story") or "").strip():
                         raise ValueError("先写几句故事")
-                    raw = Client().chat(storyboard.draft_request(j["story"], j.get("shots")))
+                    from . import director
+                    from .graph import Graph
+                    msgs = storyboard.draft_request(j["story"], j.get("shots"))
+                    pdir = Graph.load(app.graph_path()).dir
+                    msgs[0]["content"] += "\n\n【导演设定】\n" + director.load_profile(pdir)
+                    raw = Client().chat(msgs)
                     text = storyboard.clean_draft(raw)
                     if not text:
                         raise ValueError("模型没给出镜头表，换个说法再试")
                     storyboard.parse(text)          # 能解析才返回
                     return self._json(200, {"text": text})
+                if u.path.startswith("/api/director/"):
+                    return self._json(200, self._director(u.path[len("/api/director/"):],
+                                                          json.loads(self._app_body() or b"{}")))
                 if u.path == "/api/storyboard":
                     return self._json(200, self._storyboard(json.loads(self._app_body() or b"{}")))
                 if u.path == "/api/batch/gen":
@@ -273,6 +289,30 @@ def make_app_handler(app: App, tasks_factory=None):
             except Exception as e:  # noqa: BLE001
                 return self._json(400, {"error": str(e)})
             return super().do_POST()
+
+        # ---------- 内置导演 ----------
+        def _director(self, sub, j):
+            from . import director
+            from .graph import Graph
+            from .muse2api import Client
+            g = Graph.load(app.graph_path())
+            if sub == "profile":
+                director.save_profile(g.dir, j.get("text", ""))
+                return {"ok": True}
+            if sub == "feedback":
+                n = g.nodes().get(j.get("node", ""))
+                if not n:
+                    raise ValueError("节点不存在")
+                return director.add_feedback(g.dir, n["id"], j.get("verdict", ""),
+                                             (n.get("params") or {}).get("prompt", ""),
+                                             j.get("file", ""), j.get("note", ""))
+            chat = lambda m: Client().chat(m)  # noqa: E731
+            if sub.startswith("revise/"):
+                from urllib.parse import unquote
+                return director.revise(g, unquote(sub[7:]), chat, j.get("ask", ""))
+            if sub == "review":
+                return director.review(g, chat)
+            raise ValueError("未知操作")
 
         # ---------- 分镜表与批量 ----------
         def _storyboard(self, j):
