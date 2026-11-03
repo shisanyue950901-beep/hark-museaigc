@@ -10,3 +10,4 @@ shots/*.jpg
 examples/*/refs/
 examples/*/frames/
 .museaigc/
+dist/

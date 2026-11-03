@@ -323,8 +323,11 @@ class Graph:
 
 
 def _ffmpeg(args: list[str]):
-    if not shutil.which("ffmpeg"):
-        raise GraphError("找不到 ffmpeg，请先安装并加入 PATH")
-    r = subprocess.run(["ffmpeg", "-v", "error", "-y", *args], capture_output=True, text=True)
+    exe = os.environ.get("MUSEAIGC_FFMPEG") or shutil.which("ffmpeg")
+    if not exe:
+        raise GraphError("找不到 ffmpeg：把 ffmpeg.exe 放进程序目录的 ffmpeg 文件夹，或加入 PATH")
+    kw = {"creationflags": 0x08000000} if os.name == "nt" else {}   # 不弹黑窗
+    r = subprocess.run([exe, "-v", "error", "-y", *args], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", **kw)
     if r.returncode != 0:
         raise GraphError("ffmpeg 失败：" + r.stderr[-400:])

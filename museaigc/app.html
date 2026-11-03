@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>MuseAIGC</title>
+<style>
+  body{margin:0;font:14px system-ui,"Microsoft YaHei",sans-serif;background:#14161a;color:#ddd}
+  main{max-width:860px;margin:32px auto;padding:0 20px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#889;margin-bottom:24px}
+  section{background:#1d2026;border:1px solid #2e333c;border-radius:8px;padding:16px 18px;margin-bottom:18px}
+  h2{font-size:15px;margin:0 0 12px}
+  label{display:block;margin:8px 0 4px;color:#aab}
+  input,select{width:100%;box-sizing:border-box;background:#111;color:#ddd;border:1px solid #3a404c;border-radius:4px;padding:7px 8px;font:13px system-ui}
+  button{background:#2d5a8c;color:#fff;border:0;border-radius:4px;padding:7px 14px;cursor:pointer;margin:10px 8px 0 0}
+  button.ghost{background:#2c313a}
+  .row{display:flex;gap:10px}.row>*{flex:1}
+  .ok{color:#6c6}.bad{color:#e77}.dim{color:#778;font-size:12px}
+  ul{list-style:none;padding:0;margin:0}
+  li{display:flex;justify-content:space-between;align-items:center;padding:8px 4px;border-bottom:1px solid #2a2e36}
+  li a{color:#9cf;text-decoration:none;font-size:15px;cursor:pointer}
+</style></head>
+<body><main>
+  <h1>MuseAIGC</h1>
+  <div class="sub">参考图 → 首帧 → 视频 → 尾帧接力 → 裁切 → 拼接。只在本机运行。</div>
+
+  <section>
+    <h2>工程</h2>
+    <div class="row"><input id="pname" placeholder="新工程名，例如：咒与鬼 片头"><button id="create" style="flex:0 0 auto">新建并打开</button></div>
+    <ul id="plist"></ul>
+  </section>
+
+  <section>
+    <h2>接口设置</h2>
+    <label>接口地址</label><input id="base" placeholder="http://127.0.0.1:8787">
+    <div class="row">
+      <div><label>接口类型</label><select id="api">
+        <option value="open">产品 API（/api/open/v1，推荐）</option>
+        <option value="openai">OpenAI 兼容（/v1）</option></select></div>
+      <div><label>API Key（留空 = 不修改）</label><input id="key" type="password" autocomplete="off"></div>
+    </div>
+    <button id="saveset">保存</button><button class="ghost" id="test">测试连接</button>
+    <div id="setmsg" class="dim" style="margin-top:10px"></div>
+  </section>
+
+  <section class="dim" id="env"></section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const api = async (m, u, b) => { const r = await fetch(u, {method: m, headers: {'Content-Type': 'application/json'}, body: b ? JSON.stringify(b) : undefined}); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; };
+const esc = (t) => String(t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+async function load() {
+  const s = await api('GET', '/api/app/state');
+  $('#base').value = s.settings.base; $('#api').value = s.settings.api;
+  $('#key').placeholder = s.settings.hasKey ? '已保存（' + s.settings.keyStorage + '）' : '未设置';
+  $('#env').innerHTML = `工作区：${esc(s.settings.home)}<br>ffmpeg：${s.settings.ffmpeg ? esc(s.settings.ffmpeg) : '<span class="bad">未找到（尾帧、裁切、拼接不可用；把 ffmpeg.exe 放进程序目录的 ffmpeg 文件夹）</span>'}`;
+  $('#plist').innerHTML = s.projects.length ? s.projects.map(p => `<li><a data-open="${esc(p.name)}">${esc(p.name)}</a><span class="dim">${new Date(p.mtime * 1000).toLocaleString()}</span></li>`).join('') : '<li class="dim">还没有工程</li>';
+  document.querySelectorAll('[data-open]').forEach(a => a.onclick = async () => { await api('POST', '/api/app/open/' + encodeURIComponent(a.dataset.open)); location.href = '/canvas'; });
+}
+$('#create').onclick = async () => { try { await api('POST', '/api/app/projects', {name: $('#pname').value}); location.href = '/canvas'; } catch (e) { alertMsg(e.message); } };
+$('#saveset').onclick = async () => { try { await api('POST', '/api/app/settings', {base: $('#base').value, api: $('#api').value, key: $('#key').value}); $('#key').value = ''; setMsg('已保存', 'ok'); load(); } catch (e) { setMsg(e.message, 'bad'); } };
+$('#test').onclick = async () => { setMsg('测试中…'); try { const j = await api('POST', '/api/app/test'); setMsg('连接成功' + (j.points !== undefined ? `：积分 ${j.points}，今日 ${j.today_used}/${j.daily_quota}` : `：模型 ${(j.models || []).join('、')}`), 'ok'); } catch (e) { setMsg('连接失败：' + e.message, 'bad'); } };
+function setMsg(t, c) { $('#setmsg').textContent = t; $('#setmsg').className = c || 'dim'; }
+function alertMsg(t) { setMsg(t, 'bad'); }
+load();
+</script>
+</body></html>

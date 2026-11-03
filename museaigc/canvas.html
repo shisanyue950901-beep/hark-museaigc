@@ -29,6 +29,7 @@
 </style></head>
 <body>
 <div id="bar">
+  <a href="/" style="color:#9cf;margin-right:8px">← 工程</a>
   <span>添加：</span>
   <span id="adders"></span>
   <button id="save">保存</button><button id="refresh">刷新状态</button>
@@ -39,6 +40,11 @@
 <script>
 let G = null, SPEC = {}, STATUS = {}, OUTS = {}, sel = null, drag = null, wire = null;
 let view = {x: 20, y: 20, k: 1};
+const NAMES = {ref: '参考图', keyframe: '首帧', video: '视频', tailframe: '尾帧', trim: '裁切', concat: '拼接'};
+const DEFAULTS = {trim: {in_s: 0, dur_s: 3}, tailframe: {from_end_s: 0.1},
+  keyframe: {provider: 'muse-open', size: '16:9', prompt: ''},
+  video: {provider: 'muse-open', aspect: '16:9', durationRequestSeconds: 5, sendAllowed: true, prompt: ''},
+  concat: {width: 1920, height: 1080, fps: 24}};
 const $ = (s) => document.querySelector(s);
 const world = $('#world'), wires = $('#wires');
 const msg = (t) => { $('#msg').textContent = t; };
@@ -47,7 +53,7 @@ const api = async (m, u, b) => { const r = await fetch(u, {method: m, headers: {
 async function load() {
   const j = await api('GET', '/api/graph'); G = j.graph; SPEC = j.spec;
   G.nodes ||= []; G.edges ||= [];
-  $('#adders').innerHTML = Object.keys(SPEC).map(t => `<button data-add="${t}">${t}</button>`).join('');
+  $('#adders').innerHTML = Object.keys(SPEC).map(t => `<button data-add="${t}">${NAMES[t] || t}</button>`).join('');
   await refresh();
 }
 async function refresh() {
@@ -128,10 +134,21 @@ function select(id) {
   $('#panel').innerHTML = `<p>${n.type} · <b>${n.id}</b> · ${STATUS[n.id] || ''}</p>
     标签<input id="lbl" value="${(n.label || '').replace(/"/g, '&quot;')}">
     参数（JSON）<textarea id="prm">${JSON.stringify(n.params || {}, null, 2)}</textarea>
-    <button id="apply">应用</button><button id="run">运行</button><button id="gen">生成(muse2api)</button><button id="brief">生成说明</button><button id="del">删除节点</button>
+    <button id="apply">应用</button><button id="run">运行</button><button id="gen">生成</button><button id="brief">生成说明</button><button id="del">删除节点</button>
+    ${n.type === 'ref' ? '<div style="margin:6px 0">上传参考图 <input type="file" id="upl" accept=".png,.jpg,.jpeg,.webp"></div>' : ''}
+    ${n.type === 'keyframe' || n.type === 'video' ? '提示词<textarea id="pt" style="height:90px">' + (n.params?.prompt || '').replace(/</g, '&lt;') + '</textarea>' : ''}
     <div>选定文件（pick，相对图文件目录）<input id="pickf" placeholder="例如 frames/SH01_cand2.png"><button id="pick">pick</button></div>
     <div id="cands"></div><pre id="out"></pre>`;
   loadCands(n);
+  if ($('#pt')) $('#pt').oninput = () => { n.params = {...(n.params || {}), prompt: $('#pt').value}; $('#prm').value = JSON.stringify(n.params, null, 2); };
+  if ($('#upl')) $('#upl').onchange = async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    try { await save();
+      const r = await fetch('/api/upload/' + encodeURIComponent(n.id), {method: 'POST', headers: {'X-Filename': encodeURIComponent(f.name)}, body: f});
+      const j = await r.json(); if (!r.ok) throw new Error(j.error);
+      const g = await api('GET', '/api/graph'); G = g.graph; await refresh(); select(n.id); msg('参考图已上传');
+    } catch (e) { $('#out').textContent = e.message; }
+  };
   $('#gen').onclick = async () => {
     try { await save();
       const send = n.type === 'video' ? confirm('真发一次视频？会消耗 Muse 额度，结果不明时不会重发。') : false;
@@ -158,8 +175,9 @@ async function loadCands(n) {
 async function pollGen(n) {
   const j = await loadCands(n);
   if (j.job && j.job.state === 'running') { setTimeout(() => pollGen(n), 3000); return; }
-  if (j.job) $('#out').textContent = j.job.state === 'error' ? '失败：' + j.job.error : '完成';
-  refresh();
+  await refresh();
+  if (sel === n.id) select(n.id);
+  if (j.job) $('#out').textContent = j.job.state === 'error' ? '失败：' + j.job.error : (n.type === 'keyframe' ? '已出候选，点“选这张”' : '完成');
 }
 async function save() { const r = await api('PUT', '/api/graph', G); msg('已保存' + (r.warnings.length ? '；' + r.warnings.join('；') : '')); }
 $('#save').onclick = () => save().then(refresh).catch(e => msg('未保存：' + e.message));
@@ -167,7 +185,7 @@ $('#refresh').onclick = refresh;
 $('#adders').addEventListener('click', (ev) => {
   const t = ev.target.dataset.add; if (!t) return;
   let i = 1; while (G.nodes.some(n => n.id === `${t}${i}`)) i++;
-  G.nodes.push({id: `${t}${i}`, type: t, label: `${t}${i}`, x: 60 - view.x, y: 60 - view.y, params: t === 'trim' ? {in_s: 0, dur_s: 3} : {}});
+  G.nodes.push({id: `${t}${i}`, type: t, label: `${t}${i}`, x: 60 - view.x, y: 60 - view.y, params: DEFAULTS[t] ? JSON.parse(JSON.stringify(DEFAULTS[t])) : {}});
   render(); select(`${t}${i}`); msg('已添加（未保存）');
 });
 applyView(); load().catch(e => msg(e.message));

@@ -11,6 +11,7 @@ test = ["pytest==8.3.4"]
 
 [project.scripts]
 museaigc = "museaigc.cli:main"
+museaigc-app = "museaigc.app:main"
 
 [tool.setuptools]
 packages = ["museaigc"]
@@ -20,4 +21,4 @@ testpaths = ["tests"]
 pythonpath = ["tests"]
 
 [tool.setuptools.package-data]
-museaigc = ["canvas.html"]
+museaigc = ["canvas.html", "app.html"]
