@@ -21,6 +21,9 @@
 2. 启动专用 Chrome（独立资料目录，端口 9222）：
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts\start-chrome.ps1
+   第一次务必不带参数启动，在弹出的窗口里登录 muse.ai。之后想后台运行，关掉窗口改用：
+   `powershell -ExecutionPolicy Bypass -File scripts\start-chrome.ps1 -Headless`
+   （复用同一资料目录的登录状态；会话失效时 doctor 会报 NOT_READY，回到有窗口模式重登即可。无头模式能否正常出片 NOT_VERIFIED，doctor 会给出 headless/visibility 警告。）
    ```
    第一次在弹出的窗口里登录 muse.ai，之后保持这个窗口开着。
 3. 只读体检（不输入、不上传、不点击）：

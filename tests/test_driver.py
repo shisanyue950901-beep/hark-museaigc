@@ -30,6 +30,14 @@ def test_doctor_is_read_only(page, server, tmp_path):
     assert d["ok"] and d["send"] == "disabled" and clicks(page) == 0
 
 
+def test_doctor_reports_headless(page, server, tmp_path):
+    # 测试用的就是无头 Chromium：doctor 应如实报告，且不影响 ok
+    d = drv(page, server, tmp_path).doctor()
+    assert d["headless"] is True
+    assert any("无头" in w for w in d["warnings"])
+    assert d["visibility"] in ("visible", "hidden")
+
+
 def test_happy_path_binds_receipt(page, server, tmp_path, card):
     r = drv(page, server, tmp_path).run(ShotCard.load(str(card)), "SH01-T1", send=True)
     assert r.state == "RECEIPT_BOUND"
