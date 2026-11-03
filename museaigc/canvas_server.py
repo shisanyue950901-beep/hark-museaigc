@@ -1,5 +1,6 @@
 """本机画布服务：只监听 127.0.0.1。画布里可以编辑、保存、运行本机节点、pick；
-视频节点（会消耗 Muse 次数）只能在终端用 `museaigc graph run <图> <节点> --send` 执行。"""
+默认不能在画布里消耗 Muse 次数；用 `graph serve --allow-generate` 启动后，
+首帧/视频节点（provider=muse2api）可点「生成」，视频仍需节点 sendAllowed=true。"""
 from __future__ import annotations
 
 import json
@@ -14,8 +15,17 @@ from .graph import LOCAL_TYPES, SPEC, Graph, GraphError
 HTML = os.path.join(os.path.dirname(__file__), "canvas.html")
 
 
-def make_handler(graph_path: str):
+def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=None):
     lock = threading.Lock()
+    jobs: dict = {}   # nid -> {"state": running|done|error, "result"|"error"}
+
+    def _gen(nid: str, send: bool):
+        try:
+            g = Graph.load(graph_path)
+            tasks = tasks_factory(g) if tasks_factory else None
+            jobs[nid] = {"state": "done", "result": g.generate(nid, tasks=tasks, send=send)}
+        except Exception as e:  # noqa: BLE001 — 结果回给画布
+            jobs[nid] = {"state": "error", "error": str(e)}
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -63,6 +73,14 @@ def make_handler(graph_path: str):
                     warns, st, err = [], {}, str(e)
                 outs = {nid: g.state().get(nid) for nid in st if st[nid] == "DONE"}
                 return self._json(200, {"status": st, "warnings": warns, "error": err, "outputs": outs})
+            if u.path.startswith("/api/candidates/"):
+                nid = unquote(u.path[16:])
+                g = self._graph()
+                try:
+                    c = g.candidates(nid)
+                except Exception:
+                    c = []
+                return self._json(200, {"candidates": c, "job": jobs.get(nid), "allowGenerate": allow_generate})
             if u.path.startswith("/api/brief/"):
                 return self._json(200, self._graph().brief(unquote(u.path[11:])))
             if u.path.startswith("/files/"):
@@ -108,6 +126,16 @@ def make_handler(graph_path: str):
                         if t not in LOCAL_TYPES | {"ref"}:
                             return self._json(403, {"error": f"{t} 节点不能在画布里运行；视频请在终端执行 graph run --send，首帧请 pick"})
                         return self._json(200, g.run(nid))
+                    if u.path.startswith("/api/gen/"):
+                        nid = unquote(u.path[9:])
+                        if not allow_generate:
+                            return self._json(403, {"error": "画布未开启生成：用 graph serve --allow-generate 启动"})
+                        if (jobs.get(nid) or {}).get("state") == "running":
+                            return self._json(409, {"error": "该节点正在生成"})
+                        send = bool(self._body().get("send"))
+                        jobs[nid] = {"state": "running"}
+                        threading.Thread(target=_gen, args=(nid, send), daemon=True).start()
+                        return self._json(202, {"state": "running"})
                     if u.path.startswith("/api/pick/"):
                         return self._json(200, g.pick(unquote(u.path[10:]), self._body()["file"]))
                 except GraphError as e:
@@ -117,7 +145,8 @@ def make_handler(graph_path: str):
     return H
 
 
-def serve(graph_path: str, port: int = 8790):
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(os.path.abspath(graph_path)))
+def serve(graph_path: str, port: int = 8790, allow_generate: bool = False):
+    httpd = ThreadingHTTPServer(("127.0.0.1", port),
+                                make_handler(os.path.abspath(graph_path), allow_generate=allow_generate))
     print(f"画布已启动：http://127.0.0.1:{httpd.server_address[1]}/  （Ctrl+C 退出）")
     httpd.serve_forever()

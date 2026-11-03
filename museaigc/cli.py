@@ -45,8 +45,13 @@ def main(argv=None) -> int:
         x = gs.add_parser(name); x.add_argument("graph")
         if name == "serve":
             x.add_argument("--port", type=int, default=8790)
+            x.add_argument("--allow-generate", action="store_true",
+                           help="允许在画布里点「生成」调用 muse2api（消耗额度）")
     x = gs.add_parser("brief"); x.add_argument("graph"); x.add_argument("node")
     x = gs.add_parser("pick"); x.add_argument("graph"); x.add_argument("node"); x.add_argument("file")
+    x = gs.add_parser("gen", help="经 muse2api 生成（首帧出候选；视频需 --send）")
+    x.add_argument("graph"); x.add_argument("node")
+    x.add_argument("--send", action="store_true"); x.add_argument("--new-attempt", action="store_true")
     x = gs.add_parser("run"); x.add_argument("graph"); x.add_argument("node")
     x.add_argument("--send", action="store_true", help="视频节点真发（需节点 sendAllowed=true）")
     x.add_argument("--receipt-minutes", type=float, default=15)
@@ -89,7 +94,10 @@ def _graph_cmd(a) -> int:
         g = Graph.load(a.graph)
         if a.gcmd == "serve":
             from .canvas_server import serve
-            serve(a.graph, a.port); return 0
+            serve(a.graph, a.port, allow_generate=a.allow_generate); return 0
+        if a.gcmd == "gen":
+            print(json.dumps(g.generate(a.node, send=a.send, new_attempt=a.new_attempt),
+                             ensure_ascii=False, indent=2)); return 0
         if a.gcmd == "validate":
             for w in g.validate():
                 print("警告：" + w)
@@ -107,7 +115,10 @@ def _graph_cmd(a) -> int:
         r = g.run(a.node, video_runner=runner, send=a.send)
         print(json.dumps(r, ensure_ascii=False, indent=2))
         return 0 if r.get("sha256") or r.get("state") == "DRY_RUN_OK" else 3
-    except (GraphError, DriverError, ShotCardError) as e:
+    except Exception as e:
+        from .muse2api import Muse2APIError
+        if not isinstance(e, (GraphError, DriverError, ShotCardError, Muse2APIError)):
+            raise
         print(f"停止：{e}", file=sys.stderr)
         return 4
 
