@@ -16,12 +16,13 @@ HTML = os.path.join(os.path.dirname(__file__), "canvas.html")
 
 
 def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=None):
+    gp = graph_path if callable(graph_path) else (lambda: graph_path)
     lock = threading.Lock()
     jobs: dict = {}   # nid -> {"state": running|done|error, "result"|"error"}
 
     def _gen(nid: str, send: bool):
         try:
-            g = Graph.load(graph_path)
+            g = Graph.load(gp())
             tasks = tasks_factory(g) if tasks_factory else None
             jobs[nid] = {"state": "done", "result": g.generate(nid, tasks=tasks, send=send)}
         except Exception as e:  # noqa: BLE001 — 结果回给画布
@@ -44,7 +45,7 @@ def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=No
             return json.loads(self.rfile.read(n) or b"{}")
 
         def _graph(self):
-            return Graph.load(graph_path)
+            return Graph.load(gp())
 
         def _local_only(self):
             # 拒绝跨站请求：画布只服务本机页面

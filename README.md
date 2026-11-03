@@ -121,3 +121,13 @@ pip install -e ".[test]" && python -m playwright install chromium && python -m p
 - 每次提交前先查 `points`：当日额度用完或积分为 0 就不提交，也不留任务记录。
 - 服务端明确拒收（4xx）的提交记为 FAILED；断线、5xx、超时记为结果不明，**不自动补发**。
 - 轮询走 `tasks/{task_id}`。结果地址从 `result` 里自动查找；写死为 127.0.0.1 的地址会改走你配置的 MUSE2API_BASE。
+
+## 自用版桌面应用（v0.4，Windows 免安装）
+
+- 下载 `MuseAIGC-0.4.0-win64.zip`，解压后双击 `MuseAIGC.exe`，浏览器会自动打开。不用装 Python。
+- 首页可以新建或打开工程，并填写接口地址和 Key（产品 API 或 OpenAI 兼容二选一），点“测试连接”只查额度，不消耗次数。
+- Key 用 Windows DPAPI 加密，存在 `workspace\key.bin`，只有当前 Windows 用户能解开；不写进工程文件、日志，也不回传给页面。
+- 画布：参考图节点可以直接上传图片；首帧节点写提示词，点“生成”出候选，再点“选这张”；视频节点点“生成”会先弹窗确认（消耗额度）。尾帧、裁切、拼接需要 `ffmpeg\ffmpeg.exe`。
+- 服务只监听 127.0.0.1，拒绝跨站请求。重复双击不会起第二个实例，只会再打开一次浏览器。
+- 打包：`python packaging/build_portable.py`，使用 python.org 官方 embeddable CPython 3.12.10（SHA-256 已固定）。`MuseAIGC.exe` 是官方 `pythonw.exe` 的副本。
+- 开发时也可以用 `museaigc-app` 启动（源码安装后）。
