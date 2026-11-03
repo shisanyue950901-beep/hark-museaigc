@@ -80,7 +80,7 @@ def test_upload_ref_then_generate_keyframe_via_open_api(served, tmp_path):
         _req(base, "POST", "/api/app/settings", {"base": f.base, "api": "open", "key": "k"})
         _req(base, "POST", "/api/app/projects", {"name": "t1"})
         assert _req(base, "POST", "/api/upload/KF1", raw=open(png, "rb").read(),
-                    headers={"X-Filename": "a.png"})[0] == 400       # 只能传给参考节点
+                    headers={"X-Filename": "a.png"})[0] == 400       # 上游未完成，不能直接导入首帧
         c, j = _req(base, "POST", "/api/upload/REF1", raw=open(png, "rb").read(),
                     headers={"X-Filename": "a.png", "Content-Type": "application/octet-stream"})
         assert c == 200 and j["file"].endswith("REF1.png")
@@ -101,3 +101,15 @@ def test_upload_ref_then_generate_keyframe_via_open_api(served, tmp_path):
         assert f.posts[0][0] == "/api/open/v1/images/img2img"
     finally:
         f.httpd.shutdown()
+
+
+def test_import_existing_keyframe(served, tmp_path):
+    app, base = served
+    png = str(tmp_path / "r.png"); _png(png, "orange")
+    _req(base, "POST", "/api/app/projects", {"name": "imp"})
+    _req(base, "POST", "/api/upload/REF1", raw=open(png, "rb").read(), headers={"X-Filename": "a.png"})
+    assert _req(base, "POST", "/api/upload/KF1", raw=b"x", headers={"X-Filename": "a.mp4"})[0] == 400
+    c, j = _req(base, "POST", "/api/upload/KF1", raw=open(png, "rb").read(), headers={"X-Filename": "k.png"})
+    assert c == 200 and j["file"].startswith("imports")
+    _, st = _req(base, "GET", "/api/status")
+    assert st["status"]["KF1"] == "DONE"

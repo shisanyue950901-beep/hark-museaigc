@@ -305,6 +305,9 @@ class Graph:
             out = self._out_path(nid, ".mp4")
             _ffmpeg(["-ss", str(prm.get("in_s", 0)), "-i", src[0], "-t", str(prm["dur_s"]),
                      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", out])
+            got = _duration(out)
+            if got is not None and got < float(prm["dur_s"]) - 0.05:
+                return self._bind(nid, out, warning=f"源视频不够长：要 {prm['dur_s']} 秒，实得 {got:.2f} 秒")
         elif t == "concat":
             out = self._out_path(nid, ".mp4")
             w, h, fps = prm.get("width", 1920), prm.get("height", 1080), prm.get("fps", 24)
@@ -320,6 +323,21 @@ class Graph:
         else:
             raise GraphError(f"{nid}: 不支持的类型 {t}")
         return self._bind(nid, out)
+
+
+def _duration(path: str) -> float | None:
+    exe = os.environ.get("MUSEAIGC_FFMPEG") or shutil.which("ffmpeg") or ""
+    probe = os.path.join(os.path.dirname(exe), "ffprobe.exe" if os.name == "nt" else "ffprobe") \
+        if os.path.dirname(exe) else shutil.which("ffprobe")
+    if not probe or not (os.path.isfile(probe) or shutil.which(probe)):
+        return None
+    kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
+    r = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                       capture_output=True, text=True, **kw)
+    try:
+        return float(r.stdout.strip())
+    except ValueError:
+        return None
 
 
 def _ffmpeg(args: list[str]):
