@@ -132,6 +132,15 @@ class MuseDriver:
         self._ensure_loaded()
         p = self.probe()
         p["url"] = _redact_url(self.page.url)
+        env = self.page.evaluate("""() => ({ua: navigator.userAgent, hidden: document.hidden,
+                                        visibility: document.visibilityState})""")
+        p["headless"] = "HeadlessChrome" in env["ua"]
+        p["visibility"] = env["visibility"]
+        p["warnings"] = []
+        if p["headless"]:
+            p["warnings"].append("无头模式：UA 含 HeadlessChrome，可能被平台识别；生成是否继续 NOT_VERIFIED")
+        if env["hidden"]:
+            p["warnings"].append("页面不可见（document.hidden=true）：Muse 可能暂停生成，NOT_VERIFIED")
         p["ok"] = p["composer"] and p["textarea"] and p["fileInputs"] > 0
         return p
 
@@ -146,7 +155,8 @@ class MuseDriver:
             except Exception:
                 pass
             time.sleep(0.5)
-        raise DriverError("NOT_READY", "找不到 Muse 输入区：可能未登录、页面改版或网络慢。先在该 Chrome 里登录 muse.ai。")
+        raise DriverError("NOT_READY", "找不到 Muse 输入区：可能未登录、页面改版或网络慢。"
+                         "先用 start-chrome.ps1（不带 -Headless）在窗口里登录 muse.ai，再切回无头模式。")
 
     # ---------- 发送 ----------
     def run(self, card: ShotCard, take_id: str, send: bool = False) -> Result:
