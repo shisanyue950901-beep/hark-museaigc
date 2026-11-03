@@ -184,3 +184,11 @@ def test_server_generate_gate(g, fake):  # noqa: F811
                 time.sleep(0.05)
             assert j["job"]["state"] == "done" and len(j["candidates"]) == 1
         httpd.shutdown()
+
+
+def test_media_url_rewrites_server_loopback():
+    c = Client("https://x.trycloudflare.com", "k")
+    assert c.media_url("http://127.0.0.1:8787/v1/media/a.webp") == "https://x.trycloudflare.com/v1/media/a.webp"
+    assert c.media_url("/v1/media/a.webp") == "https://x.trycloudflare.com/v1/media/a.webp"
+    assert c.media_url("https://cdn.example.com/a.webp") == "https://cdn.example.com/a.webp"
+    assert Client("http://127.0.0.1:8787", "k").media_url("http://127.0.0.1:8787/v1/media/a") == "http://127.0.0.1:8787/v1/media/a"

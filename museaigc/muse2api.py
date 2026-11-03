@@ -102,8 +102,18 @@ class Client:
         _, j = self._req("GET", f"/v1/{'images/tasks' if kind == 'image' else 'videos'}/{tid}")
         return j
 
+    def media_url(self, url: str) -> str:
+        """服务端常把媒体地址写成它自己的 127.0.0.1；经隧道或局域网访问时改走 base。"""
+        u = urllib.parse.urlsplit(url)
+        if not u.scheme:
+            return self.base + (url if url.startswith("/") else "/" + url)
+        b = urllib.parse.urlsplit(self.base)
+        if u.hostname in ("127.0.0.1", "localhost", "0.0.0.0", "::1") and u.netloc != b.netloc:
+            return self.base + u.path + (("?" + u.query) if u.query else "")
+        return url
+
     def download(self, url: str, dest: str):
-        _, raw = self._req("GET", url)
+        _, raw = self._req("GET", self.media_url(url))
         if isinstance(raw, (dict, list)):
             raise Muse2APIError("媒体地址返回的是 JSON 而不是文件")
         with open(dest + ".part", "wb") as f:
