@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -38,7 +39,21 @@ def main(argv=None) -> int:
         sp.add_argument("--receipt-minutes", type=float, default=15)
     st = sub.add_parser("status")
     st.add_argument("take")
+    gp = sub.add_parser("graph", help="多镜头画布")
+    gs = gp.add_subparsers(dest="gcmd", required=True)
+    for name in ("validate", "status", "serve"):
+        x = gs.add_parser(name); x.add_argument("graph")
+        if name == "serve":
+            x.add_argument("--port", type=int, default=8790)
+    x = gs.add_parser("brief"); x.add_argument("graph"); x.add_argument("node")
+    x = gs.add_parser("pick"); x.add_argument("graph"); x.add_argument("node"); x.add_argument("file")
+    x = gs.add_parser("run"); x.add_argument("graph"); x.add_argument("node")
+    x.add_argument("--send", action="store_true", help="视频节点真发（需节点 sendAllowed=true）")
+    x.add_argument("--receipt-minutes", type=float, default=15)
     a = ap.parse_args(argv)
+
+    if a.cmd == "graph":
+        return _graph_cmd(a)
 
     if a.cmd == "status":
         for e in Journal(a.runs, a.take).events():
@@ -66,6 +81,59 @@ def main(argv=None) -> int:
     except (DriverError, ShotCardError) as e:
         print(f"停止：{e}", file=sys.stderr)
         return 4
+
+
+def _graph_cmd(a) -> int:
+    from .graph import Graph, GraphError
+    try:
+        g = Graph.load(a.graph)
+        if a.gcmd == "serve":
+            from .canvas_server import serve
+            serve(a.graph, a.port); return 0
+        if a.gcmd == "validate":
+            for w in g.validate():
+                print("警告：" + w)
+            print("图有效"); return 0
+        if a.gcmd == "status":
+            g.validate()
+            print(json.dumps(g.status(), ensure_ascii=False, indent=2)); return 0
+        if a.gcmd == "brief":
+            print(json.dumps(g.brief(a.node), ensure_ascii=False, indent=2)); return 0
+        if a.gcmd == "pick":
+            print(json.dumps(g.pick(a.node, a.file), ensure_ascii=False, indent=2)); return 0
+        runner = None
+        if g.nodes().get(a.node, {}).get("type") == "video":
+            runner = _browser_video_runner(a)
+        r = g.run(a.node, video_runner=runner, send=a.send)
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0 if r.get("sha256") or r.get("state") == "DRY_RUN_OK" else 3
+    except (GraphError, DriverError, ShotCardError) as e:
+        print(f"停止：{e}", file=sys.stderr)
+        return 4
+
+
+def _browser_video_runner(a):
+    """把视频节点翻译成一张临时镜头卡，交给现有驱动（一个 Take 只发一次）。"""
+    def run(g, nid, frame_path, frame_sha, prm, send):
+        from playwright.sync_api import sync_playwright
+        card = ShotCard(shot_id=nid, prompt=prm.get("prompt", ""), first_frame=frame_path,
+                        first_frame_sha256=frame_sha, aspect=prm.get("aspect", "16:9"),
+                        duration_request_s=int(prm.get("durationRequestSeconds", 10)),
+                        send_allowed=bool(prm.get("sendAllowed")))
+        if not card.prompt:
+            raise ShotCardError(f"{nid}: 缺少 prompt")
+        take = prm.get("take") or f"{nid}-T{time.strftime('%Y%m%d%H%M%S')}"
+        sel = Selectors.load(a.selectors)
+        runs = os.path.join(g.work, "runs")
+        with sync_playwright() as pw:
+            _, page = _page(pw, a.cdp, sel.base_url)
+            r = MuseDriver(page, sel, Timeouts(receipt_s=a.receipt_minutes * 60),
+                           runs_dir=runs).run(card, take, send=send)
+        out = {"state": r.state, "take": take, **r.data}
+        if r.state == "RECEIPT_BOUND":
+            out["path"] = os.path.join(runs, take, r.data["file"])
+        return out
+    return run
 
 
 if __name__ == "__main__":

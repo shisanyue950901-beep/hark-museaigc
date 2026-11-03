@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "name": "《咒与鬼》片头 SH01–SH03 示例",
+  "nodes": [
+    {"id": "C01", "type": "ref", "label": "C01 杨间定妆", "x": 20, "y": 40, "params": {"file": "refs/C01.png"}},
+    {"id": "LOC01", "type": "ref", "label": "LOC01 夜间教室", "x": 20, "y": 260, "params": {"file": "refs/LOC01.png"}},
+    {"id": "SH01_kf", "type": "keyframe", "label": "SH01 首帧", "x": 260, "y": 40,
+     "params": {"prompt": "中近景，杨间低头看手机，屏幕为无意义光块；夜间教室，冷蓝窗光配暖色台灯；日系赛璐璐；画内无文字。"}},
+    {"id": "SH01_v", "type": "video", "label": "SH01 视频", "x": 500, "y": 40,
+     "params": {"prompt": "以上传图片为第一帧。镜头缓慢推近，约 2 秒处他抬眼，察觉异样。", "aspect": "16:9", "durationRequestSeconds": 5, "sendAllowed": false}},
+    {"id": "SH01_tail", "type": "tailframe", "label": "SH01 尾帧", "x": 740, "y": 40, "params": {"from_end_s": 0.1}},
+    {"id": "SH02_v", "type": "video", "label": "SH02 视频（动作延续）", "x": 980, "y": 40,
+     "params": {"prompt": "以上传图片为第一帧。他缓缓转头看向窗外，窗外灯光闪烁一下。", "aspect": "16:9", "durationRequestSeconds": 5, "sendAllowed": false}},
+    {"id": "SH03_kf", "type": "keyframe", "label": "SH03 首帧（切镜）", "x": 260, "y": 300,
+     "params": {"prompt": "全景，夜间教室后排视角，杨间独坐窗边；同一套光色。"}},
+    {"id": "SH03_v", "type": "video", "label": "SH03 视频", "x": 500, "y": 300,
+     "params": {"prompt": "以上传图片为第一帧。固定机位，走廊灯依次熄灭。", "aspect": "16:9", "durationRequestSeconds": 5, "sendAllowed": false}},
+    {"id": "SH01_cut", "type": "trim", "label": "SH01 裁 3 秒", "x": 740, "y": 200, "params": {"in_s": 0, "dur_s": 3}},
+    {"id": "SH02_cut", "type": "trim", "label": "SH02 裁 3 秒", "x": 1220, "y": 40, "params": {"in_s": 0, "dur_s": 3}},
+    {"id": "SH03_cut", "type": "trim", "label": "SH03 裁 3 秒", "x": 740, "y": 360, "params": {"in_s": 0, "dur_s": 3}},
+    {"id": "OPENING", "type": "concat", "label": "片头拼接", "x": 1220, "y": 260, "params": {"width": 1920, "height": 1080, "fps": 24}}
+  ],
+  "edges": [
+    {"from": "C01", "to": "SH01_kf", "port": "refs"},
+    {"from": "LOC01", "to": "SH01_kf", "port": "refs"},
+    {"from": "SH01_kf", "to": "SH01_v", "port": "frame"},
+    {"from": "SH01_v", "to": "SH01_tail", "port": "video"},
+    {"from": "SH01_tail", "to": "SH02_v", "port": "frame"},
+    {"from": "C01", "to": "SH03_kf", "port": "refs"},
+    {"from": "LOC01", "to": "SH03_kf", "port": "refs"},
+    {"from": "SH03_kf", "to": "SH03_v", "port": "frame"},
+    {"from": "SH01_v", "to": "SH01_cut", "port": "video"},
+    {"from": "SH02_v", "to": "SH02_cut", "port": "video"},
+    {"from": "SH03_v", "to": "SH03_cut", "port": "video"},
+    {"from": "SH01_cut", "to": "OPENING", "port": "clips"},
+    {"from": "SH02_cut", "to": "OPENING", "port": "clips"},
+    {"from": "SH03_cut", "to": "OPENING", "port": "clips"}
+  ]
+}

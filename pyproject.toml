@@ -17,3 +17,7 @@ packages = ["museaigc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[tool.setuptools.package-data]
+museaigc = ["canvas.html"]
