@@ -6,3 +6,7 @@ runs/
 .venv/
 shots/*.png
 shots/*.jpg
+
+examples/*/refs/
+examples/*/frames/
+.museaigc/

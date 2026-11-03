@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>museaigc 画布</title>
+<style>
+  body{margin:0;font:13px system-ui,"Microsoft YaHei",sans-serif;background:#14161a;color:#ddd;display:flex;height:100vh}
+  #bar{position:fixed;top:0;left:0;right:300px;height:40px;background:#1d2026;display:flex;gap:6px;align-items:center;padding:0 8px;z-index:5;border-bottom:1px solid #333}
+  #bar button{background:#2c313a;color:#ddd;border:1px solid #444;border-radius:4px;padding:4px 8px;cursor:pointer}
+  #msg{margin-left:auto;color:#e9b44c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:50%}
+  #stage{position:relative;flex:1;overflow:hidden;margin-top:40px}
+  #world{position:absolute;left:0;top:0;transform-origin:0 0}
+  svg{position:absolute;left:0;top:0;width:6000px;height:4000px;overflow:visible}
+  svg path{fill:none;stroke:#7a8699;stroke-width:2;pointer-events:stroke;cursor:pointer}
+  svg path:hover{stroke:#e05555;stroke-width:4}
+  .node{position:absolute;width:180px;background:#232730;border:2px solid #3a404c;border-radius:6px;user-select:none}
+  .node.sel{border-color:#5aa0ff}
+  .node .hd{padding:4px 6px;background:#2c313a;border-radius:4px 4px 0 0;cursor:move;display:flex;justify-content:space-between}
+  .node .bd{padding:4px 6px;font-size:12px;color:#aaa}
+  .node img,.node video{width:100%;display:block;margin-top:4px}
+  .port{display:flex;align-items:center;gap:4px;margin:3px 0}
+  .dot{width:11px;height:11px;border-radius:50%;background:#888;border:2px solid #14161a;cursor:crosshair}
+  .in .dot{margin-left:-13px}.out{justify-content:flex-end}.out .dot{margin-right:-13px}
+  .image{background:#4fb6a0}.video{background:#d08c3c}
+  .st{font-size:11px;padding:0 4px;border-radius:3px}
+  .DONE{background:#2f6b3a}.READY{background:#2d5a8c}.BLOCKED{background:#444}.WAITING_PICK,.WAITING_SEND{background:#7a5b1c}
+  #side{width:300px;background:#1b1e23;border-left:1px solid #333;padding:8px;box-sizing:border-box;overflow:auto}
+  #side textarea,#side input{width:100%;box-sizing:border-box;background:#111;color:#ddd;border:1px solid #444;font:12px monospace}
+  #side textarea{height:220px}
+  #side button{margin:4px 4px 0 0}
+  pre{white-space:pre-wrap;font-size:11px;color:#9ab}
+</style></head>
+<body>
+<div id="bar">
+  <span>添加：</span>
+  <span id="adders"></span>
+  <button id="save">保存</button><button id="refresh">刷新状态</button>
+  <span id="msg"></span>
+</div>
+<div id="stage"><div id="world"><svg id="wires"></svg></div></div>
+<div id="side"><b>选中节点</b><div id="panel"><p>点节点查看与编辑。拖动右侧圆点到另一节点左侧圆点即可连线；点连线删除。</p></div></div>
+<script>
+let G = null, SPEC = {}, STATUS = {}, OUTS = {}, sel = null, drag = null, wire = null;
+let view = {x: 20, y: 20, k: 1};
+const $ = (s) => document.querySelector(s);
+const world = $('#world'), wires = $('#wires');
+const msg = (t) => { $('#msg').textContent = t; };
+const api = async (m, u, b) => { const r = await fetch(u, {method: m, headers: {'Content-Type': 'application/json'}, body: b ? JSON.stringify(b) : undefined}); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; };
+
+async function load() {
+  const j = await api('GET', '/api/graph'); G = j.graph; SPEC = j.spec;
+  G.nodes ||= []; G.edges ||= [];
+  $('#adders').innerHTML = Object.keys(SPEC).map(t => `<button data-add="${t}">${t}</button>`).join('');
+  await refresh();
+}
+async function refresh() {
+  const s = await api('GET', '/api/status'); STATUS = s.status; OUTS = s.outputs || {};
+  msg(s.error ? '错误：' + s.error : (s.warnings || []).join('；') || '图有效');
+  render();
+}
+function applyView() { world.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.k})`; }
+function render() {
+  world.querySelectorAll('.node').forEach(n => n.remove());
+  for (const n of G.nodes) {
+    const sp = SPEC[n.type] || {in: {}, out: ''};
+    const el = document.createElement('div');
+    el.className = 'node' + (sel === n.id ? ' sel' : ''); el.dataset.id = n.id;
+    el.style.left = (n.x || 0) + 'px'; el.style.top = (n.y || 0) + 'px';
+    const st = STATUS[n.id] || '';
+    const o = OUTS[n.id];
+    let media = '';
+    if (o) media = sp.out === 'image' ? `<img src="/files/${o.file}">` : `<video src="/files/${o.file}" muted controls></video>`;
+    el.innerHTML = `<div class="hd"><span>${n.label || n.id}</span><span class="st ${st}">${st}</span></div>
+      <div class="bd">${n.type} · ${n.id}
+      ${Object.entries(sp.in).map(([p, v]) => `<div class="port in" data-port="${p}"><span class="dot ${v[0]}"></span>${p} (${v[1]}–${v[2]})</div>`).join('')}
+      <div class="port out"><span>${sp.out}</span><span class="dot ${sp.out}" data-out="1"></span></div>${media}</div>`;
+    world.appendChild(el);
+  }
+  drawWires();
+}
+function portPos(id, port) {
+  const el = world.querySelector(`.node[data-id="${CSS.escape(id)}"]`); if (!el) return null;
+  const d = port ? el.querySelector(`.in[data-port="${port}"] .dot`) : el.querySelector('[data-out] ');
+  const r = d.getBoundingClientRect(), w = world.getBoundingClientRect();
+  return {x: (r.left + r.width / 2 - w.left) / view.k, y: (r.top + r.height / 2 - w.top) / view.k};
+}
+const curve = (a, b) => `M${a.x},${a.y} C${a.x + 60},${a.y} ${b.x - 60},${b.y} ${b.x},${b.y}`;
+function drawWires(extra) {
+  wires.innerHTML = '';
+  G.edges.forEach((e, i) => {
+    const a = portPos(e.from), b = portPos(e.to, e.port); if (!a || !b) return;
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', curve(a, b)); p.dataset.i = i;
+    p.onclick = () => { G.edges.splice(i, 1); drawWires(); msg('已删除连线（未保存）'); };
+    wires.appendChild(p);
+  });
+  if (extra) { const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', curve(extra.a, extra.b)); p.style.stroke = '#5aa0ff'; wires.appendChild(p); }
+}
+const toWorld = (ev) => { const w = world.getBoundingClientRect(); return {x: (ev.clientX - w.left) / view.k, y: (ev.clientY - w.top) / view.k}; };
+
+world.addEventListener('mousedown', (ev) => {
+  const nodeEl = ev.target.closest('.node');
+  if (ev.target.dataset.out) { wire = {from: nodeEl.dataset.id}; ev.stopPropagation(); return; }
+  if (nodeEl && ev.target.closest('.hd')) {
+    const n = G.nodes.find(x => x.id === nodeEl.dataset.id), p = toWorld(ev);
+    drag = {n, dx: p.x - (n.x || 0), dy: p.y - (n.y || 0)}; select(n.id); ev.stopPropagation(); return;
+  }
+  if (nodeEl) { select(nodeEl.dataset.id); ev.stopPropagation(); }
+});
+$('#stage').addEventListener('mousedown', (ev) => { if (!ev.target.closest('.node')) drag = {pan: true, sx: ev.clientX - view.x, sy: ev.clientY - view.y}; });
+window.addEventListener('mousemove', (ev) => {
+  if (wire) { drawWires({a: portPos(wire.from), b: toWorld(ev)}); return; }
+  if (!drag) return;
+  if (drag.pan) { view.x = ev.clientX - drag.sx; view.y = ev.clientY - drag.sy; applyView(); return; }
+  const p = toWorld(ev); drag.n.x = Math.round(p.x - drag.dx); drag.n.y = Math.round(p.y - drag.dy);
+  const el = world.querySelector(`.node[data-id="${CSS.escape(drag.n.id)}"]`); el.style.left = drag.n.x + 'px'; el.style.top = drag.n.y + 'px'; drawWires();
+});
+window.addEventListener('mouseup', (ev) => {
+  if (wire) {
+    const inp = ev.target.closest('.in'), nodeEl = ev.target.closest('.node');
+    if (inp && nodeEl && nodeEl.dataset.id !== wire.from) { G.edges.push({from: wire.from, to: nodeEl.dataset.id, port: inp.dataset.port}); msg('已连线（未保存）'); }
+    wire = null; drawWires();
+  }
+  drag = null;
+});
+$('#stage').addEventListener('wheel', (ev) => { ev.preventDefault(); view.k = Math.min(2, Math.max(0.3, view.k * (ev.deltaY < 0 ? 1.1 : 0.9))); applyView(); drawWires(); }, {passive: false});
+
+function select(id) {
+  sel = id; world.querySelectorAll('.node').forEach(e => e.classList.toggle('sel', e.dataset.id === id));
+  const n = G.nodes.find(x => x.id === id); if (!n) return;
+  $('#panel').innerHTML = `<p>${n.type} · <b>${n.id}</b> · ${STATUS[n.id] || ''}</p>
+    标签<input id="lbl" value="${(n.label || '').replace(/"/g, '&quot;')}">
+    参数（JSON）<textarea id="prm">${JSON.stringify(n.params || {}, null, 2)}</textarea>
+    <button id="apply">应用</button><button id="run">运行</button><button id="brief">生成说明</button><button id="del">删除节点</button>
+    <div>选定文件（pick，相对图文件目录）<input id="pickf" placeholder="例如 frames/SH01_cand2.png"><button id="pick">pick</button></div>
+    <pre id="out"></pre>`;
+  $('#apply').onclick = () => { try { n.label = $('#lbl').value; n.params = JSON.parse($('#prm').value); msg('已应用（未保存）'); render(); select(n.id); } catch (e) { msg('参数不是合法 JSON'); } };
+  $('#del').onclick = () => { G.nodes = G.nodes.filter(x => x.id !== n.id); G.edges = G.edges.filter(e => e.from !== n.id && e.to !== n.id); sel = null; render(); msg('已删除（未保存）'); };
+  $('#run').onclick = async () => { try { await save(); $('#out').textContent = JSON.stringify(await api('POST', '/api/run/' + encodeURIComponent(n.id)), null, 2); refresh(); } catch (e) { $('#out').textContent = e.message; } };
+  $('#brief').onclick = async () => { $('#out').textContent = JSON.stringify(await api('GET', '/api/brief/' + encodeURIComponent(n.id)), null, 2); };
+  $('#pick').onclick = async () => { try { await save(); $('#out').textContent = JSON.stringify(await api('POST', '/api/pick/' + encodeURIComponent(n.id), {file: $('#pickf').value}), null, 2); refresh(); } catch (e) { $('#out').textContent = e.message; } };
+}
+async function save() { const r = await api('PUT', '/api/graph', G); msg('已保存' + (r.warnings.length ? '；' + r.warnings.join('；') : '')); }
+$('#save').onclick = () => save().then(refresh).catch(e => msg('未保存：' + e.message));
+$('#refresh').onclick = refresh;
+$('#adders').addEventListener('click', (ev) => {
+  const t = ev.target.dataset.add; if (!t) return;
+  let i = 1; while (G.nodes.some(n => n.id === `${t}${i}`)) i++;
+  G.nodes.push({id: `${t}${i}`, type: t, label: `${t}${i}`, x: 60 - view.x, y: 60 - view.y, params: t === 'trim' ? {in_s: 0, dur_s: 3} : {}});
+  render(); select(`${t}${i}`); msg('已添加（未保存）');
+});
+applyView(); load().catch(e => msg(e.message));
+</script>
+</body></html>

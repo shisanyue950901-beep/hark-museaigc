@@ -41,6 +41,38 @@
    最长等 15 分钟（`--receipt-minutes` 可改）。成片和日志在 `runs\<Take>\`。
 7. 查日志：`museaigc status <Take>`。
 
+## 多镜头画布（v0.2）
+
+Muse 视频只吃 1 张首帧，所以多参考放在“首帧”一步完成，连续动作用尾帧接力：
+
+```
+参考图(定妆/场景) ──┬─► 首帧 ─► 视频 ─┬─► 尾帧 ─► 下一镜视频（动作延续）
+                   │                  └─► 裁切 ─┐
+                   └─► 首帧 ─► 视频 ─────► 裁切 ─┴─► 拼接成片（切镜）
+```
+
+| 节点 | 输入 | 输出 | 怎么执行 |
+|---|---|---|---|
+| ref | — | 图 | 画布「运行」，记录 SHA |
+| keyframe | 1–4 张图 | 图 | 「生成说明」导出参考图+提示词，外部生成后 `pick` 选定 |
+| video | 恰好 1 张图 | 视频 | 只在终端：`museaigc graph run 图 节点 --send`（节点 `sendAllowed=true`），或 `pick` 导入已有成片 |
+| tailframe | 1 段视频 | 图 | 本机 ffmpeg 抽尾帧 |
+| trim | 1 段视频 | 视频 | 本机 ffmpeg，`in_s`/`dur_s` |
+| concat | ≥1 段视频（按连线顺序） | 视频 | 本机 ffmpeg，统一 1920×1080/24fps |
+
+- 每个节点的结果按“类型+参数+上游 SHA”缓存；上游一变，下游自动失效，不会重复出片。
+- 尾帧连续接力 ≥3 次会警告（漂移累积），建议回到参考节点重新出首帧。
+- 画布只监听 127.0.0.1，拒绝跨站请求；画布里不能触发 Muse 出片。
+
+```powershell
+museaigc graph serve examples\opening\graph.json      # 打开 http://127.0.0.1:8790/
+museaigc graph status examples\opening\graph.json
+museaigc graph pick examples\opening\graph.json SH01_kf frames\SH01_cand2.png
+museaigc graph run examples\opening\graph.json SH01_v            # 空跑：上传+填写，不点击
+museaigc graph run examples\opening\graph.json SH01_v --send     # 真发一次
+```
+画布为自写的原生 JS（无构建步骤），未使用 xyflow。
+
 ## 退出码
 0 成功（`DRY_RUN_OK`/`RECEIPT_BOUND`）；2 体检未过；3 已发送但无回执（`TEXT_ONLY`/`NO_RECEIPT`）；4 点击前停止（原因见输出）。
 
