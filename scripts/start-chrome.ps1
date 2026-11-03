@@ -1,4 +1,4 @@
-# 启动一个专用 Chrome（独立资料目录 + 远程调试端口 9222），只监听本机。
+﻿# 启动一个专用 Chrome（独立资料目录 + 远程调试端口 9222），只监听本机。
 # Chrome 136 起，默认资料目录禁止远程调试，所以必须用独立目录；第一次需要在这个窗口里登录 muse.ai。
 # 后三个参数关闭后台节流：窗口被遮挡时 Muse 生成不会暂停。
 #
@@ -19,8 +19,10 @@ $chrome = @(
 if (-not $chrome) { Write-Error "没找到 Chrome"; exit 1 }
 New-Item -ItemType Directory -Force -Path $Profile | Out-Null
 
-# 同一资料目录不能被两个 Chrome 同时打开
-if (Test-Path (Join-Path $Profile "lockfile")) {
+# 同一资料目录不能被两个 Chrome 同时打开。
+# Windows 版 Chrome 的锁文件叫 lockfile，Linux/macOS 叫 SingletonLock，两个都查。
+$locked = @("lockfile", "SingletonLock") | Where-Object { Test-Path (Join-Path $Profile $_) }
+if ($locked) {
   Write-Warning "资料目录可能正被另一个 Chrome 使用；请先关闭它再启动。"
 }
 
