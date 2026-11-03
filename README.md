@@ -87,3 +87,37 @@ pip install -e ".[test]" && python -m playwright install chromium && python -m p
 `mock/index.html` 模拟 Muse 页面，`?scenario=` 可切换：ok、refuse、cover_only、upload_fail、quota、dialog、old_video、no_start。
 
 借鉴来源见 [NOTICE.md](NOTICE.md)。
+
+## v0.3：接入 muse2api（自用）
+
+如果你本机已经跑着 [muse2api](https://github.com/czg86389-hub/muse2api)，画布可以直接调用它出首帧和视频，不再走 CDP 驱动。
+
+1. 设置地址和密钥。密钥只从环境变量或系统凭据库读取，不写进图文件和日志：
+   ```powershell
+   $env:MUSE2API_BASE = "http://127.0.0.1:18610"
+   pip install keyring; python -m keyring set museaigc muse2api   # 推荐；或 $env:MUSE2API_KEY = "m2a_..."
+   ```
+2. 在图里把 keyframe 或 video 节点的 `params.provider` 设为 `"muse2api"`。
+3. 生成：
+   ```powershell
+   museaigc graph gen examples\opening\graph.json SH01_kf          # 出一张首帧候选（可多次 --new-attempt 出多张）
+   museaigc graph pick examples\opening\graph.json SH01_kf <候选文件>
+   museaigc graph gen examples\opening\graph.json SH01_v --send     # 视频；节点需 sendAllowed=true
+   ```
+   也可以用 `museaigc graph serve <图> --allow-generate` 启动画布，在节点面板里点“生成”，在候选缩略图下点“选这张”。
+
+规则：
+- 每次提交前先写任务记录 `.museaigc/tasks/<节点>.<序号>.json`，其中带幂等键；拿到 task id 后再写一次。
+- 再次运行只继续轮询，不会重新提交。查询失败只重试查询。
+- 提交时崩溃、没拿到 task id 的，记为结果不明，**不自动补发**；先去 muse2api 面板核对，再用 `--new-attempt` 重来。
+- 任务失败即为终态，重来同样要 `--new-attempt`。
+- 结果下载到 `.museaigc/out/<节点>/`，记录字节数和 SHA-256。首帧只作为候选，需人工 pick；视频直接绑定为节点输出，下游可接尾帧接力。
+- 接口按 muse2api README 编写（`/v1/images/tasks`、`/v1/videos`），对真实实例 NOT_VERIFIED。muse2api 的多账号池、在线升级等功能由你自行决定是否开启，本工具不依赖它们。
+
+### 产品 API（/api/open/v1）
+
+如果你的服务同时提供 `/api/open/v1`（异步任务：pending → processing → done|failed），把节点的 `provider` 设为 `"muse-open"` 即可：
+- 有参考图时，图生图走 `images/img2img`、首帧生视频走 `videos/img2video`，都用 multipart 上传本地文件；没有参考图时走 `images` 或 `videos`。
+- 每次提交前先查 `points`：当日额度用完或积分为 0 就不提交，也不留任务记录。
+- 服务端明确拒收（4xx）的提交记为 FAILED；断线、5xx、超时记为结果不明，**不自动补发**。
+- 轮询走 `tasks/{task_id}`。结果地址从 `result` 里自动查找；写死为 127.0.0.1 的地址会改走你配置的 MUSE2API_BASE。

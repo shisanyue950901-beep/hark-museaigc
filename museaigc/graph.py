@@ -227,6 +227,46 @@ class Graph:
         return {"node": nid, "type": n["type"], "label": n.get("label"),
                 "prompt": (n.get("params") or {}).get("prompt", ""), "inputs": refs}
 
+    # ---------- muse2api 生成 ----------
+    def candidates(self, nid: str, tasks=None) -> list[dict]:
+        from .muse2api import TaskRunner
+        tasks = tasks or TaskRunner(self)
+        k = self.key(nid)
+        return [r for r in tasks.records(nid) if r["state"] == "DONE" and r["key"] == k]
+
+    def generate(self, nid: str, tasks=None, send: bool = False, new_attempt: bool = False) -> dict:
+        """经 muse2api 生成：keyframe → 一张候选（需 pick）；video → 直接绑定为输出。"""
+        from .muse2api import TaskRunner
+        self.validate()
+        n = self.nodes().get(nid)
+        if not n or n["type"] not in ("keyframe", "video"):
+            raise GraphError(f"{nid}: 只有 keyframe/video 节点能生成")
+        prm = n.get("params") or {}
+        if prm.get("provider") not in ("muse2api", "muse-open"):
+            raise GraphError(f"{nid}: 节点参数 provider 需为 muse2api 或 muse-open")
+        key = self.key(nid)
+        if key is None:
+            raise GraphError(f"{nid}: 上游未完成")
+        if not prm.get("prompt"):
+            raise GraphError(f"{nid}: 缺少 prompt")
+        if tasks is None:
+            from .muse2api import Client
+            tasks = TaskRunner(self, Client(api="open" if prm["provider"] == "muse-open" else "openai"))
+        ins = [self.abspath(self.output(u)["file"]) for u in self.inputs(nid)]
+        if n["type"] == "keyframe":
+            rec = tasks.start_or_resume(nid, "image", lambda idem: tasks.client.submit_image(
+                prm["prompt"], ins, prm.get("size", "16:9"), idem), key, new_attempt)
+            return {**rec, "next": f"museaigc graph pick <图> {nid} {rec['file']}"}
+        if not send or not prm.get("sendAllowed"):
+            raise GraphError(f"{nid}: 视频生成需要节点 sendAllowed=true 且带 --send")
+        cached = self.output(nid)
+        if cached:
+            return {**cached, "cached": True}
+        rec = tasks.start_or_resume(nid, "video", lambda idem: tasks.client.submit_video(
+            prm["prompt"], ins[0], int(prm.get("durationRequestSeconds", 5)), prm.get("aspect", "16:9"), idem),
+            key, new_attempt)
+        return self._bind(nid, rec["file"], take=rec["taskId"], provider="muse2api", state="RECEIPT_BOUND")
+
     def run(self, nid: str, video_runner=None, send: bool = False) -> dict:
         nodes = self.nodes()
         if nid not in nodes:

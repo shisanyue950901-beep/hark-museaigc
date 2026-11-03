@@ -128,14 +128,38 @@ function select(id) {
   $('#panel').innerHTML = `<p>${n.type} · <b>${n.id}</b> · ${STATUS[n.id] || ''}</p>
     标签<input id="lbl" value="${(n.label || '').replace(/"/g, '&quot;')}">
     参数（JSON）<textarea id="prm">${JSON.stringify(n.params || {}, null, 2)}</textarea>
-    <button id="apply">应用</button><button id="run">运行</button><button id="brief">生成说明</button><button id="del">删除节点</button>
+    <button id="apply">应用</button><button id="run">运行</button><button id="gen">生成(muse2api)</button><button id="brief">生成说明</button><button id="del">删除节点</button>
     <div>选定文件（pick，相对图文件目录）<input id="pickf" placeholder="例如 frames/SH01_cand2.png"><button id="pick">pick</button></div>
-    <pre id="out"></pre>`;
+    <div id="cands"></div><pre id="out"></pre>`;
+  loadCands(n);
+  $('#gen').onclick = async () => {
+    try { await save();
+      const send = n.type === 'video' ? confirm('真发一次视频？会消耗 Muse 额度，结果不明时不会重发。') : false;
+      if (n.type === 'video' && !send) return;
+      await api('POST', '/api/gen/' + encodeURIComponent(n.id), {send});
+      $('#out').textContent = '生成中…'; pollGen(n);
+    } catch (e) { $('#out').textContent = e.message; }
+  };
   $('#apply').onclick = () => { try { n.label = $('#lbl').value; n.params = JSON.parse($('#prm').value); msg('已应用（未保存）'); render(); select(n.id); } catch (e) { msg('参数不是合法 JSON'); } };
   $('#del').onclick = () => { G.nodes = G.nodes.filter(x => x.id !== n.id); G.edges = G.edges.filter(e => e.from !== n.id && e.to !== n.id); sel = null; render(); msg('已删除（未保存）'); };
   $('#run').onclick = async () => { try { await save(); $('#out').textContent = JSON.stringify(await api('POST', '/api/run/' + encodeURIComponent(n.id)), null, 2); refresh(); } catch (e) { $('#out').textContent = e.message; } };
   $('#brief').onclick = async () => { $('#out').textContent = JSON.stringify(await api('GET', '/api/brief/' + encodeURIComponent(n.id)), null, 2); };
   $('#pick').onclick = async () => { try { await save(); $('#out').textContent = JSON.stringify(await api('POST', '/api/pick/' + encodeURIComponent(n.id), {file: $('#pickf').value}), null, 2); refresh(); } catch (e) { $('#out').textContent = e.message; } };
+}
+async function loadCands(n) {
+  const j = await api('GET', '/api/candidates/' + encodeURIComponent(n.id));
+  $('#gen').disabled = !j.allowGenerate || !['keyframe', 'video'].includes(n.type);
+  $('#cands').innerHTML = (j.candidates || []).map(c => `<div style="margin-top:6px"><img src="/files/${c.file}" style="width:100%"><button data-pick="${c.file}">选这张</button> <small>${c.sha256.slice(0, 12)}</small></div>`).join('');
+  $('#cands').querySelectorAll('[data-pick]').forEach(b => b.onclick = async () => {
+    try { $('#out').textContent = JSON.stringify(await api('POST', '/api/pick/' + encodeURIComponent(n.id), {file: b.dataset.pick}), null, 2); refresh(); } catch (e) { $('#out').textContent = e.message; }
+  });
+  return j;
+}
+async function pollGen(n) {
+  const j = await loadCands(n);
+  if (j.job && j.job.state === 'running') { setTimeout(() => pollGen(n), 3000); return; }
+  if (j.job) $('#out').textContent = j.job.state === 'error' ? '失败：' + j.job.error : '完成';
+  refresh();
 }
 async function save() { const r = await api('PUT', '/api/graph', G); msg('已保存' + (r.warnings.length ? '；' + r.warnings.join('；') : '')); }
 $('#save').onclick = () => save().then(refresh).catch(e => msg('未保存：' + e.message));
