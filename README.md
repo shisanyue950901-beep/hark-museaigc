@@ -124,7 +124,7 @@ pip install -e ".[test]" && python -m playwright install chromium && python -m p
 
 ## 自用版桌面应用（v0.6，Windows 免安装）
 
-- 下载 `MuseAIGC-0.6.0-win64.zip`，解压后双击 `MuseAIGC.exe`，浏览器会自动打开。不用装 Python。
+- 下载 `MuseAIGC-0.6.1-win64.zip`，解压后双击 `MuseAIGC.exe`，浏览器会自动打开。不用装 Python。
 - 首页可以新建或打开工程，并填写接口地址和 Key（产品 API 或 OpenAI 兼容二选一），点“测试连接”只查额度，不消耗次数。
 - Key 用 Windows DPAPI 加密，存在 `workspace\key.bin`，只有当前 Windows 用户能解开；不写进工程文件、日志，也不回传给页面。
 - 画布：参考图节点可以直接上传图片；首帧节点写提示词，点“生成”出候选，再点“选这张”；视频节点点“生成”会先弹窗确认（消耗额度）。尾帧、裁切、拼接需要 `ffmpeg\ffmpeg.exe`。
