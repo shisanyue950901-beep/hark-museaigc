@@ -282,3 +282,10 @@ def test_quota_refusal_leaves_no_ambiguous_record(g, tmp_path):  # noqa: F811
         assert g.generate("SH01_kf", tasks=t)["state"] == "DONE"   # 额度恢复后可正常提交
     finally:
         f.httpd.shutdown()
+
+
+def test_result_url_attachments_shape():
+    """真实 muse-clone 的 img2img 结果：result.attachments[].url，相对路径 /files/…"""
+    from museaigc.muse2api import result_url
+    j = {"status": "done", "result": {"content": "", "attachments": [{"kind": "image", "url": "/files/a.webp"}]}}
+    assert result_url(j) == "/files/a.webp"

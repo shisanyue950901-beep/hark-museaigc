@@ -205,7 +205,7 @@ def result_url(j) -> str | None:
     for k in ("url", "video_url", "image_url", "file_url"):
         if isinstance(j.get(k), str) and j[k]:
             return j[k]
-    for k in ("result", "data", "urls", "images", "videos", "outputs", "files"):
+    for k in ("result", "data", "urls", "images", "videos", "outputs", "files", "attachments", "media"):
         if k in j:
             u = result_url(j[k])
             if u:
@@ -286,8 +286,9 @@ class TaskRunner:
             if st in DONE:
                 url = result_url(j)
                 if not url:
-                    rec.update(state="FAILED", error="完成但没有结果地址"); self._save(rec)
-                    raise Muse2APIError(f"{rec['node']}: 完成但没有结果地址")
+                    # 服务端已完成（可能已扣费）：保持 SUBMITTED，下次点“生成”只重新查询取回，不会重新提交
+                    rec["lastError"] = "完成但没有找到结果地址"; self._save(rec)
+                    raise Muse2APIError(f"{rec['node']}: 任务已完成但没找到结果地址；再点一次“生成”只会重新取回，不会重新提交")
                 ext = os.path.splitext(url.split("?")[0])[1] or (".mp4" if kind == "video" else ".png")
                 d = os.path.join(self.g.work, "out", rec["node"]); os.makedirs(d, exist_ok=True)
                 dest = os.path.join(d, f"attempt{rec['attempt']:03d}{ext}")
