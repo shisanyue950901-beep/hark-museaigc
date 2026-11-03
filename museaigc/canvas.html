@@ -33,14 +33,32 @@
   <span>添加：</span>
   <span id="adders"></span>
   <button id="save">保存</button><button id="refresh">刷新状态</button>
+  <span style="margin-left:10px">|</span>
+  <button id="sb">分镜表</button><button id="bkf">批量出首帧</button><button id="bv">批量出视频</button><button id="brun">一键裁切拼接</button>
   <span id="msg"></span>
 </div>
 <div id="stage"><div id="world"><svg id="wires"></svg></div></div>
+<div id="sbm" style="display:none;position:fixed;inset:0;background:#000a;z-index:20">
+  <div style="width:760px;margin:60px auto;background:#1d2026;border:1px solid #444;border-radius:8px;padding:16px">
+    <b>分镜表</b> <small style="color:#889">每行：镜号 | 首帧画面 | 视频动作 | 成片秒数 | 接续（接 = 用上一镜尾帧；留空 = 重新出首帧）</small>
+    <details style="margin-top:8px"><summary style="cursor:pointer;color:#9cf">AI 帮我写分镜（用接口里的对话模型，会消耗一次对话额度）</summary>
+      <textarea id="story" style="width:100%;height:90px;margin-top:6px;background:#111;color:#ddd;border:1px solid #444" placeholder="写几句故事：深夜教室，杨间独自留下，手机屏幕忽明忽暗，走廊的灯一盏盏熄灭……"></textarea>
+      镜头数 <input id="shots" type="number" min="1" max="30" value="5" style="width:60px"> <button id="draft">生成分镜表</button>
+    </details>
+    <textarea id="sbt" style="width:100%;height:260px;margin-top:8px;background:#111;color:#ddd;border:1px solid #444;font:13px monospace" placeholder="SH01 | 中近景，杨间低头看手机，夜间教室，冷蓝窗光配暖色台灯 | 镜头缓慢推近，约 2 秒处他抬眼 | 3 |
+SH02 | （接续可不写画面） | 他缓缓转头看向窗外 | 3 | 接
+SH03 | 全景，教室后排视角，杨间独坐窗边 | 固定机位，走廊灯依次熄灭 | 3 |"></textarea>
+    <div style="margin-top:8px">画幅 <select id="sba"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option></select>
+      <small style="color:#889">首帧会连到画布上所有参考图节点（最多 4 个）</small></div>
+    <div style="margin-top:10px"><button id="sbgo">展开到画布</button> <button id="sbx">取消</button> <span id="sbmsg" style="color:#e9b44c"></span></div>
+  </div>
+</div>
 <div id="side"><b>选中节点</b><div id="panel"><p>点节点查看与编辑。拖动右侧圆点到另一节点左侧圆点即可连线；点连线删除。</p></div></div>
 <script>
 let G = null, SPEC = {}, STATUS = {}, OUTS = {}, sel = null, drag = null, wire = null;
 let view = {x: 20, y: 20, k: 1};
 const NAMES = {ref: '参考图', keyframe: '首帧', video: '视频', tailframe: '尾帧', trim: '裁切', concat: '拼接'};
+const ST_NAMES = {DONE: '完成', READY: '可执行', BLOCKED: '等上游', WAITING_PICK: '待选首帧', WAITING_SEND: '待发送'};
 const DEFAULTS = {trim: {in_s: 0, dur_s: 3}, tailframe: {from_end_s: 0.1},
   keyframe: {provider: 'muse-open', size: '16:9', prompt: ''},
   video: {provider: 'muse-open', aspect: '16:9', durationRequestSeconds: 5, sendAllowed: true, prompt: ''},
@@ -73,7 +91,7 @@ function render() {
     const o = OUTS[n.id];
     let media = '';
     if (o) media = sp.out === 'image' ? `<img src="/files/${o.file}">` : `<video src="/files/${o.file}" muted controls></video>`;
-    el.innerHTML = `<div class="hd"><span>${n.label || n.id}</span><span class="st ${st}">${st}</span></div>
+    el.innerHTML = `<div class="hd"><span>${n.label || n.id}</span><span class="st ${st}">${ST_NAMES[st] || st}</span></div>
       <div class="bd">${n.type} · ${n.id}
       ${Object.entries(sp.in).map(([p, v]) => `<div class="port in" data-port="${p}"><span class="dot ${v[0]}"></span>${p} (${v[1]}–${v[2]})</div>`).join('')}
       <div class="port out"><span>${sp.out}</span><span class="dot ${sp.out}" data-out="1"></span></div>${media}</div>`;
@@ -136,6 +154,8 @@ function select(id) {
     参数（JSON）<textarea id="prm">${JSON.stringify(n.params || {}, null, 2)}</textarea>
     <button id="apply">应用</button><button id="run">运行</button><button id="gen">生成</button><button id="brief">生成说明</button><button id="del">删除节点</button>
     ${n.type === 'ref' ? '<div style="margin:6px 0">上传参考图 <input type="file" id="upl" accept=".png,.jpg,.jpeg,.webp"></div>' : ''}
+    ${n.type === 'keyframe' ? '<div style="margin:6px 0">或用已有图片作首帧 <input type="file" id="upl" accept=".png,.jpg,.jpeg,.webp"></div>' : ''}
+    ${n.type === 'video' ? '<div style="margin:6px 0">或导入已有视频 <input type="file" id="upl" accept=".mp4,.mov,.webm"></div>' : ''}
     ${n.type === 'keyframe' || n.type === 'video' ? '提示词<textarea id="pt" style="height:90px">' + (n.params?.prompt || '').replace(/</g, '&lt;') + '</textarea>' : ''}
     <div>选定文件（pick，相对图文件目录）<input id="pickf" placeholder="例如 frames/SH01_cand2.png"><button id="pick">pick</button></div>
     <div id="cands"></div><pre id="out"></pre>`;
@@ -146,7 +166,7 @@ function select(id) {
     try { await save();
       const r = await fetch('/api/upload/' + encodeURIComponent(n.id), {method: 'POST', headers: {'X-Filename': encodeURIComponent(f.name)}, body: f});
       const j = await r.json(); if (!r.ok) throw new Error(j.error);
-      const g = await api('GET', '/api/graph'); G = g.graph; await refresh(); select(n.id); msg('参考图已上传');
+      const g = await api('GET', '/api/graph'); G = g.graph; await refresh(); select(n.id); msg('已导入');
     } catch (e) { $('#out').textContent = e.message; }
   };
   $('#gen').onclick = async () => {
@@ -182,6 +202,61 @@ async function pollGen(n) {
 async function save() { const r = await api('PUT', '/api/graph', G); msg('已保存' + (r.warnings.length ? '；' + r.warnings.join('；') : '')); }
 $('#save').onclick = () => save().then(refresh).catch(e => msg('未保存：' + e.message));
 $('#refresh').onclick = refresh;
+$('#sb').onclick = () => { $('#sbm').style.display = 'block'; };
+$('#draft').onclick = async () => {
+  $('#sbmsg').textContent = '生成中…';
+  try { const r = await api('POST', '/api/storyboard/draft', {story: $('#story').value, shots: +$('#shots').value || null});
+    $('#sbt').value = r.text; $('#sbmsg').textContent = '已生成，检查修改后再展开';
+  } catch (e) { $('#sbmsg').textContent = e.message; }
+};
+$('#sbx').onclick = () => { $('#sbm').style.display = 'none'; };
+$('#sbgo').onclick = async () => {
+  try { await save();
+    const r = await api('POST', '/api/storyboard', {text: $('#sbt').value, aspect: $('#sba').value});
+    const g = await api('GET', '/api/graph'); G = g.graph; await refresh();
+    $('#sbm').style.display = 'none';
+    msg(`已展开 ${r.added.length} 个节点，成片约 ${r.seconds} 秒` + (r.notes.length ? '；' + r.notes.join('；') : ''));
+  } catch (e) { $('#sbmsg').textContent = e.message; }
+};
+async function batch(type) {
+  try { await save();
+    let confirmBox = false;
+    if (type === 'video') {
+      const n = Object.entries(STATUS).filter(([id, s]) => s === 'READY' && (G.nodes.find(x => x.id === id) || {}).type === 'video').length;
+      if (!n) { msg('没有可生成的视频：先选定首帧'); return; }
+      confirmBox = confirm(`批量生成 ${n} 段视频？会消耗 ${n} 次额度，结果不明时不会重发。`);
+      if (!confirmBox) return;
+    }
+    const r = await api('POST', '/api/batch/gen', {type, confirm: confirmBox});
+    msg(`已开始 ${r.started.length} 个` + (r.skipped.length ? `；跳过：${r.skipped.map(x => x.node + '（' + x.why + '）').join('、')}` : ''));
+    pollBatch();
+  } catch (e) { msg(e.message); }
+}
+let polling = false;
+async function pollBatch() {
+  if (polling) return; polling = true;
+  try {
+    for (;;) {
+      const j = await api('GET', '/api/batch');
+      const run = Object.values(j.jobs).filter(s => s === 'running').length;
+      await refresh();
+      const errs = Object.entries(j.jobs).filter(([k, s]) => s === 'error').map(([k]) => k);
+      msg(run ? `生成中：${run} 个` : '生成结束' + (errs.length ? `；失败：${errs.join('、')}（点节点看原因）` : '；首帧请逐个点“选这张”'));
+      if (!run) break;
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  } finally { polling = false; if (sel) select(sel); }
+}
+$('#bkf').onclick = () => batch('keyframe');
+$('#bv').onclick = () => batch('video');
+$('#brun').onclick = async () => {
+  try { await save(); msg('裁切拼接中…');
+    const r = await api('POST', '/api/batch/run');
+    await refresh();
+    msg(`完成 ${r.done.length} 个本机节点` + (r.errors.length ? `；出错：${r.errors.map(e => e.node + '：' + e.error).join('；')}` : '')
+        + (r.warnings.length ? `；注意：${r.warnings.map(w => w.node + ' ' + w.warning).join('；')}` : ''));
+  } catch (e) { msg(e.message); }
+};
 $('#adders').addEventListener('click', (ev) => {
   const t = ev.target.dataset.add; if (!t) return;
   let i = 1; while (G.nodes.some(n => n.id === `${t}${i}`)) i++;

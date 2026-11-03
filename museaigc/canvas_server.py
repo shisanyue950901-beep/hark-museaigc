@@ -20,13 +20,24 @@ def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=No
     lock = threading.Lock()
     jobs: dict = {}   # nid -> {"state": running|done|error, "result"|"error"}
 
+    gen_slots = threading.BoundedSemaphore(2)   # 同时最多 2 个生成，低于服务端 max_running
+
     def _gen(nid: str, send: bool):
-        try:
-            g = Graph.load(gp())
-            tasks = tasks_factory(g) if tasks_factory else None
-            jobs[nid] = {"state": "done", "result": g.generate(nid, tasks=tasks, send=send)}
-        except Exception as e:  # noqa: BLE001 — 结果回给画布
-            jobs[nid] = {"state": "error", "error": str(e)}
+        with gen_slots:
+            try:
+                g = Graph.load(gp())
+                tasks = tasks_factory(g) if tasks_factory else None
+                jobs[nid] = {"state": "done", "result": g.generate(nid, tasks=tasks, send=send)}
+            except Exception as e:  # noqa: BLE001 — 结果回给画布
+                jobs[nid] = {"state": "error", "error": str(e)}
+
+    def start_gen(nid: str, send: bool) -> bool:
+        """已在跑/排队就不重复起。返回是否新起了任务。"""
+        if (jobs.get(nid) or {}).get("state") in ("running", "queued"):
+            return False
+        jobs[nid] = {"state": "running"}
+        threading.Thread(target=_gen, args=(nid, send), daemon=True).start()
+        return True
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -131,11 +142,9 @@ def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=No
                         nid = unquote(u.path[9:])
                         if not allow_generate:
                             return self._json(403, {"error": "画布未开启生成：用 graph serve --allow-generate 启动"})
-                        if (jobs.get(nid) or {}).get("state") == "running":
-                            return self._json(409, {"error": "该节点正在生成"})
                         send = bool(self._body().get("send"))
-                        jobs[nid] = {"state": "running"}
-                        threading.Thread(target=_gen, args=(nid, send), daemon=True).start()
+                        if not start_gen(nid, send):
+                            return self._json(409, {"error": "该节点正在生成"})
                         return self._json(202, {"state": "running"})
                     if u.path.startswith("/api/pick/"):
                         return self._json(200, g.pick(unquote(u.path[10:]), self._body()["file"]))
@@ -143,6 +152,9 @@ def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=No
                     return self._json(400, {"error": str(e)})
             self._json(404, {"error": "not found"})
 
+    H.jobs = jobs
+    H.start_gen = staticmethod(start_gen)
+    H.lock = lock
     return H
 
 

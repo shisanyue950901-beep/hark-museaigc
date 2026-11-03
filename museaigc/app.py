@@ -147,24 +147,38 @@ class App:
         return os.path.join(self.projects, self.current, "graph.json")
 
     def save_upload(self, node: str, filename: str, data: bytes) -> str:
+        """参考图：存为 refs/<节点>.<ext> 并登记；首帧/视频：存进 imports/ 后直接 pick（用已有素材）。"""
+        import hashlib
         from .graph import Graph
         ext = os.path.splitext(filename)[1].lower()
-        if ext not in (".png", ".jpg", ".jpeg", ".webp"):
-            raise ValueError("参考图只支持 png、jpg、webp")
-        if len(data) > 30 * 1024 * 1024:
-            raise ValueError("图片超过 30MB")
+        if len(data) > 500 * 1024 * 1024:
+            raise ValueError("文件超过 500MB")
         g = Graph.load(self.graph_path())
         n = g.nodes().get(node)
-        if not n or n["type"] != "ref":
-            raise ValueError("只能给参考图节点上传")
-        rel = os.path.join("refs", f"{node}{ext}")
-        with open(os.path.join(g.dir, rel), "wb") as f:
-            f.write(data)
-        n.setdefault("params", {})["file"] = rel.replace(os.sep, "/")
-        n["params"].pop("sha256", None)
-        g.save()
-        g.run(node)                     # 立刻登记 SHA，下游可用
-        return rel
+        if not n:
+            raise ValueError("节点不存在")
+        img, vid = (".png", ".jpg", ".jpeg", ".webp"), (".mp4", ".mov", ".webm")
+        if n["type"] == "ref":
+            if ext not in img:
+                raise ValueError("参考图只支持 png、jpg、webp")
+            rel = os.path.join("refs", f"{node}{ext}")
+            with open(os.path.join(g.dir, rel), "wb") as f:
+                f.write(data)
+            n.setdefault("params", {})["file"] = rel.replace(os.sep, "/")
+            n["params"].pop("sha256", None)
+            g.save()
+            g.run(node)                     # 立刻登记 SHA，下游可用
+            return rel
+        if n["type"] in ("keyframe", "video"):
+            if ext not in (img if n["type"] == "keyframe" else vid):
+                raise ValueError("首帧只收图片，视频节点只收 mp4、mov、webm")
+            os.makedirs(os.path.join(g.dir, "imports"), exist_ok=True)
+            rel = os.path.join("imports", f"{node}-{hashlib.sha256(data).hexdigest()[:12]}{ext}")
+            with open(os.path.join(g.dir, rel), "wb") as f:
+                f.write(data)
+            g.pick(node, rel)
+            return rel
+        raise ValueError("这个节点不能上传文件")
 
 
 def ffmpeg_path() -> str:
@@ -195,6 +209,8 @@ def make_app_handler(app: App, tasks_factory=None):
                 if not app.current:
                     return self._redirect("/")
                 return self._file(os.path.join(os.path.dirname(__file__), "canvas.html"))
+            if u.path == "/api/batch" and app.current:
+                return self._json(200, {"jobs": self._jobs()})
             if u.path == "/api/app/state":
                 return self._json(200, {"settings": app.public_settings(),
                                         "projects": app.list_projects(), "current": app.current})
@@ -215,10 +231,16 @@ def make_app_handler(app: App, tasks_factory=None):
                     return self._json(200, app.test_connection())
                 if u.path == "/api/app/projects":
                     j = json.loads(self._app_body() or b"{}")
+                    if any(v.get("state") == "running" for v in self.jobs.values()):
+                        raise ValueError("当前工程还有生成在跑，等它结束再新建")
+                    self.jobs.clear()
                     name = app.create_project(j.get("name", ""))
                     app.open_project(name)
                     return self._json(200, {"name": name})
                 if u.path.startswith("/api/app/open/"):
+                    if any(v.get("state") == "running" for v in self.jobs.values()):
+                        raise ValueError("当前工程还有生成在跑，等它结束再切换")
+                    self.jobs.clear()
                     app.open_project(unquote(u.path[len("/api/app/open/"):]))
                     return self._json(200, {"ok": True})
                 if u.path.startswith("/api/upload/"):
@@ -229,7 +251,94 @@ def make_app_handler(app: App, tasks_factory=None):
                 return self._json(400, {"error": str(e)})
             if not app.current:
                 return self._json(409, {"error": "还没打开工程"})
+            try:
+                if u.path == "/api/storyboard/draft":
+                    from . import storyboard
+                    from .muse2api import Client
+                    j = json.loads(self._app_body() or b"{}")
+                    if not (j.get("story") or "").strip():
+                        raise ValueError("先写几句故事")
+                    raw = Client().chat(storyboard.draft_request(j["story"], j.get("shots")))
+                    text = storyboard.clean_draft(raw)
+                    if not text:
+                        raise ValueError("模型没给出镜头表，换个说法再试")
+                    storyboard.parse(text)          # 能解析才返回
+                    return self._json(200, {"text": text})
+                if u.path == "/api/storyboard":
+                    return self._json(200, self._storyboard(json.loads(self._app_body() or b"{}")))
+                if u.path == "/api/batch/gen":
+                    return self._json(200, self._batch_gen(json.loads(self._app_body() or b"{}")))
+                if u.path == "/api/batch/run":
+                    return self._json(200, self._batch_run())
+            except Exception as e:  # noqa: BLE001
+                return self._json(400, {"error": str(e)})
             return super().do_POST()
+
+        # ---------- 分镜表与批量 ----------
+        def _storyboard(self, j):
+            from . import storyboard
+            from .graph import Graph
+            with self.lock:
+                g = Graph.load(app.graph_path())
+                rows = storyboard.parse(j.get("text", ""))
+                refs = j.get("refs") or [n["id"] for n in g.data.get("nodes", []) if n["type"] == "ref"]
+                ys = [n.get("y", 0) for n in g.data.get("nodes", [])]
+                res = storyboard.expand(g.data, rows, refs, y0=(max(ys) + 260 if ys else 60),
+                                        aspect=j.get("aspect") or "16:9")
+                g.validate()
+                g.save()
+            return res
+
+        def _batch_gen(self, j):
+            from .graph import Graph
+            kind = j.get("type")
+            if kind not in ("keyframe", "video"):
+                raise ValueError("type 只能是 keyframe 或 video")
+            if kind == "video" and not j.get("confirm"):
+                raise ValueError("批量生成视频需要确认")
+            g = Graph.load(app.graph_path())
+            st = g.status()
+            started, skipped = [], []
+            for nid in g.topo():
+                n = g.nodes()[nid]
+                if n["type"] != kind:
+                    continue
+                if not (n.get("params") or {}).get("prompt"):
+                    skipped.append({"node": nid, "why": "没有提示词"}); continue
+                if kind == "keyframe":
+                    if st[nid] != "WAITING_PICK":
+                        continue
+                    if g.candidates(nid):
+                        skipped.append({"node": nid, "why": "已有候选，等你选"}); continue
+                elif st[nid] != "READY":
+                    continue
+                if self.start_gen(nid, kind == "video"):
+                    started.append(nid)
+            return {"started": started, "skipped": skipped}
+
+        def _batch_run(self):
+            from .graph import LOCAL_TYPES, Graph
+            done, errors, warnings = [], [], []
+            with self.lock:
+                progress = True
+                while progress:
+                    progress = False
+                    g = Graph.load(app.graph_path())
+                    st = g.status()
+                    for nid in g.topo():
+                        if g.nodes()[nid]["type"] in LOCAL_TYPES and st.get(nid) == "READY" \
+                                and nid not in [e["node"] for e in errors]:
+                            try:
+                                rec = g.run(nid); done.append(nid); progress = True
+                                if rec.get("warning"):
+                                    warnings.append({"node": nid, "warning": rec["warning"]})
+                            except Exception as e:  # noqa: BLE001
+                                errors.append({"node": nid, "error": str(e)[:300]})
+                            break
+            return {"done": done, "errors": errors, "warnings": warnings}
+
+        def _jobs(self):
+            return {k: v.get("state") for k, v in self.jobs.items()}
 
         def do_PUT(self):
             if not app.current:

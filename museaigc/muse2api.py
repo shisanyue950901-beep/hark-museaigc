@@ -113,6 +113,19 @@ class Client:
         except urllib.error.URLError as e:
             raise Muse2APIError(f"连不上 muse2api（{self.base}）：{e.reason}") from None
 
+    def chat(self, messages: list, model: str = "muse-chat", timeout: float = 180) -> str:
+        """OpenAI 兼容对话（/v1/chat/completions，非流式）。"""
+        old, self.timeout = self.timeout, timeout
+        try:
+            _, j = self._req("POST", "/v1/chat/completions",
+                             {"model": model, "messages": messages, "stream": False})
+        finally:
+            self.timeout = old
+        try:
+            return j["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            raise Muse2APIError(f"对话返回格式不对：{str(j)[:200]}") from None
+
     def check_quota(self):
         """产品 API：提交前查额度，用完就不提交。"""
         if self.api != "open":
