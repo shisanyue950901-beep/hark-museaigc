@@ -10,7 +10,7 @@ import sys
 import urllib.request
 import zipfile
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 PY_URL = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
 PY_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"   # 2026-11-03 从 python.org 下载时记录
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
