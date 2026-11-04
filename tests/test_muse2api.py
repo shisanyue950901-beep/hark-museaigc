@@ -289,3 +289,100 @@ def test_result_url_attachments_shape():
     from museaigc.muse2api import result_url
     j = {"status": "done", "result": {"content": "", "attachments": [{"kind": "image", "url": "/files/a.webp"}]}}
     assert result_url(j) == "/files/a.webp"
+
+
+# ---------- 11-04 服务端新契约 ----------
+class _StubClient:
+    idempotent = True
+    can_recover = True
+
+    def __init__(self, polls, recover=(200, {"recovered": True})):
+        self.polls, self.rec_resp, self.submits, self.recovers = list(polls), recover, [], 0
+
+    def check_quota(self):
+        return {}
+
+    def poll(self, kind, tid):
+        return self.polls.pop(0) if len(self.polls) > 1 else self.polls[0]
+
+    def recover(self, tid):
+        self.recovers += 1
+        return self.rec_resp
+
+    def download(self, url, dest):
+        open(dest, "wb").write(b"img")
+
+
+def _runner(tmp_path, client):
+    from museaigc.graph import Graph
+    from museaigc.muse2api import TaskRunner
+    g = Graph(str(tmp_path / "g.json"), {"nodes": [], "edges": []})
+    return TaskRunner(g, client, poll_s=0, timeout_s=5)
+
+
+def test_unknown_submit_resubmits_with_same_key(tmp_path):
+    from museaigc.muse2api import Muse2APIError
+    c = _StubClient([{"status": "succeeded", "stage": None, "cost_points": 5, "result": {
+        "url": "/files/a.png", "attachments": [{"kind": "image", "url": "/files/a.png", "width": 1920, "height": 1280}]}}])
+    r = _runner(tmp_path, c)
+    keys = []
+
+    def boom(idem):
+        keys.append(idem); raise Muse2APIError("断线")
+    with pytest.raises(Muse2APIError):
+        r.start_or_resume("KF", "image", boom, "k1")
+    assert r.records("KF")[-1]["state"] == "SUBMITTING"
+
+    def ok(idem):
+        keys.append(idem); return "T1"
+    rec = r.start_or_resume("KF", "image", ok, "k1")
+    assert rec["state"] == "DONE" and keys[0] == keys[1] and rec["resubmittedSameKey"]
+    assert rec["cost_points"] == 5 and rec["height"] == 1280 and rec["stage"] is None and len(r.records("KF")) == 1
+
+
+def test_failed_with_upstream_id_is_recovered(tmp_path):
+    c = _StubClient([{"status": "failed", "upstream_id": "U9", "error": {"code": "upstream_timeout"}},
+                     {"status": "succeeded", "result": {"url": "/files/v.mp4"}}])
+    rec = _runner(tmp_path, c).start_or_resume("V", "video", lambda i: "T2", "k")
+    assert rec["state"] == "DONE" and c.recovers == 1 and rec["upstream_id"] == "U9"
+
+
+def test_recover_409_ends_failed(tmp_path):
+    from museaigc.muse2api import Muse2APIError
+    c = _StubClient([{"status": "failed", "upstream_id": "U9"}], recover=(409, {"reason": "no_upstream_id"}))
+    with pytest.raises(Muse2APIError, match="失败"):
+        _runner(tmp_path, c).start_or_resume("V", "video", lambda i: "T3", "k")
+
+
+def test_no_healthy_account_is_retryable(tmp_path):
+    from museaigc.muse2api import Muse2APIError
+    r = _runner(tmp_path, _StubClient([{"status": "queued"}]))
+
+    def busy(idem):
+        raise Muse2APIError("503", 503, "no_healthy_account")
+    with pytest.raises(Muse2APIError):
+        r.start_or_resume("KF", "image", busy, "k")
+    last = r.records("KF")[-1]
+    assert last["state"] == "FAILED" and last["retryable"]
+
+
+def test_http_error_is_friendly():
+    import http.server, threading
+    from museaigc.muse2api import Client, Muse2APIError
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            b = json.dumps({"error": {"code": "no_healthy_account", "message": "x"}}).encode()
+            self.send_response(503); self.send_header("Content-Type", "application/json")
+            self.send_header("Retry-After", "30"); self.end_headers(); self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+    s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(Muse2APIError) as ei:
+            Client(base=f"http://127.0.0.1:{s.server_address[1]}", key="k", api="open")._req("POST", "/x", {})
+        assert ei.value.code == "no_healthy_account" and "没有可用" in str(ei.value) and "30 秒" in str(ei.value)
+    finally:
+        s.shutdown()

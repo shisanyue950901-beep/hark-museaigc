@@ -30,8 +30,19 @@ DONE = {"completed", "succeeded", "success", "done"}
 FAILED = {"failed", "error", "cancelled", "canceled", "interrupted", "timeout", "timed_out", "expired", "aborted"}
 
 
+FRIENDLY = {
+    "no_healthy_account": "服务端暂时没有可用的 Muse 账号，任务没有提交，稍后再试",
+    "too_many_running": "同时进行的任务太多，等前面的完成再提交",
+    "text_upstream_unauthorized": "Muse 文本上游的凭据失效了（不是你的 key），需要服务端管理员更新",
+    "chat_timeout": "对话超时（服务端上限 90 秒），可以把要求写短一点再试",
+    "task_not_found": "服务端没有这个任务",
+    "invalid_api_key": "Key 不对或已停用",
+}
+
+
 class Muse2APIError(Exception):
-    def __init__(self, msg, status: int | None = None):
+    def __init__(self, msg, status: int | None = None, code: str | None = None):
+        self.code = code
         super().__init__(msg); self.status = status
 
 
@@ -108,12 +119,44 @@ class Client:
                 ctype = r.headers.get("Content-Type", "")
                 return r.status, (json.loads(raw) if "json" in ctype and raw else raw)
         except urllib.error.HTTPError as e:
-            msg = e.read().decode(errors="replace")[:300]
-            raise Muse2APIError(f"HTTP {e.code} {path}: {msg}", e.code) from None
+            raw = e.read().decode(errors="replace")
+            code, text = None, raw[:300]
+            try:
+                err = json.loads(raw).get("error") or {}
+                if isinstance(err, dict):
+                    code, text = err.get("code"), err.get("message") or text
+            except (ValueError, AttributeError):
+                if "<html" in raw[:200].lower():
+                    text = "网关返回了网页（多半是隧道超时或服务端崩溃）"
+            hint = FRIENDLY.get(code)
+            ra = e.headers.get("Retry-After") if e.headers else None
+            msg = f"HTTP {e.code} {path}: {hint or text}" + (f"（{ra} 秒后再试）" if ra else "")
+            raise Muse2APIError(msg, e.code, code) from None
         except urllib.error.URLError as e:
             raise Muse2APIError(f"连不上 muse2api（{self.base}）：{e.reason}") from None
 
-    def chat(self, messages: list, model: str = "muse-chat", timeout: float = 180) -> str:
+    # 产品 API（MuseStudio ≥ 11-04）支持幂等键补交与补取/取消
+    @property
+    def idempotent(self) -> bool:
+        return self.api == "open"
+
+    @property
+    def can_recover(self) -> bool:
+        return self.api == "open"
+
+    def recover(self, tid: str):
+        try:
+            return self._req("POST", f"/api/open/v1/tasks/{tid}/recover")
+        except Muse2APIError as e:
+            if e.status == 409:
+                return 409, {"reason": e.code or str(e)}
+            raise
+
+    def cancel(self, tid: str) -> dict:
+        _, j = self._req("POST", f"/api/open/v1/tasks/{tid}/cancel")
+        return j if isinstance(j, dict) else {}
+
+    def chat(self, messages: list, model: str = "muse-chat", timeout: float = 100) -> str:
         """OpenAI 兼容对话（/v1/chat/completions，非流式）。"""
         old, self.timeout = self.timeout, timeout
         try:
@@ -246,6 +289,16 @@ class TaskRunner:
         recs = self.records(nid)
         last = recs[-1] if recs else None
         if last and last["key"] == key and not new_attempt:
+            if last["state"] in ("SUBMITTING",) and getattr(self.client, "idempotent", False):
+                # 服务端支持 Idempotency-Key（24 小时内同键同任务）：用原来的键补交，不会重复出片或扣分
+                try:
+                    last["taskId"] = submit(last["idempotencyKey"])
+                except Muse2APIError as e:
+                    if e.status and 400 <= e.status < 500 and e.status != 408:
+                        last.update(state="FAILED", error=str(e)[:300]); self._save(last)
+                    raise
+                last["state"] = "SUBMITTED"; last["resubmittedSameKey"] = True; self._save(last)
+                return self._wait(last, kind)
             if last["state"] in ("SUBMITTING",):
                 # 提交结果不明：不补发，交给人判断
                 raise Muse2APIError(f"{nid}: 上次提交结果不明（无 task id），为避免重复出片不再自动提交；"
@@ -263,9 +316,9 @@ class TaskRunner:
         try:
             rec["taskId"] = submit(rec["idempotencyKey"])
         except Muse2APIError as e:
-            if e.status and 400 <= e.status < 500 and e.status != 408:
-                # 服务端明确拒收：确定没有出片，记为失败
-                rec.update(state="FAILED", error=str(e)[:300]); self._save(rec)
+            if (e.status and 400 <= e.status < 500 and e.status != 408) or e.code == "no_healthy_account":
+                # 服务端明确拒收（含 503 no_healthy_account）：确定没有建任务，记为失败，可直接重来
+                rec.update(state="FAILED", error=str(e)[:300], retryable=True); self._save(rec)
             raise                              # 其余（断线、5xx、超时）保持 SUBMITTING = 结果不明
         rec["state"] = "SUBMITTED"
         self._save(rec)
@@ -283,6 +336,16 @@ class TaskRunner:
                 last_err = str(e); time.sleep(self.poll_s); continue
             st = str(j.get("status", "")).lower()
             rec["status"] = st
+            rec["stage"] = j.get("stage")            # 终态时服务端给 null，跟着清掉
+            for k in ("upstream_id", "cost_points"):
+                if j.get(k) is not None:
+                    rec[k] = j[k]
+            res = j.get("result") if isinstance(j.get("result"), dict) else {}
+            att = next((a for a in res.get("attachments") or [] if isinstance(a, dict)), {})
+            for k in ("width", "height"):              # 实际尺寸：result 或 attachments[0]
+                v = res.get(k) or att.get(k) or j.get(k)
+                if v:
+                    rec[k] = v
             if st in DONE:
                 url = result_url(j)
                 if not url:
@@ -297,6 +360,20 @@ class TaskRunner:
                            sha256=sha256_file(dest), bytes=os.path.getsize(dest), doneAt=time.time())
                 self._save(rec)
                 return rec
+            if st in FAILED and rec.get("upstream_id") and not rec.get("recoverTried") \
+                    and getattr(self.client, "can_recover", False) and st not in ("canceled", "cancelled"):
+                # 服务端判失败但上游可能已出片：拿上游任务号补取一次
+                rec["recoverTried"] = True; self._save(rec)
+                try:
+                    code, rj = self.client.recover(rec["taskId"])
+                except Muse2APIError as e:
+                    rec["recoverError"] = str(e)[:200]
+                else:
+                    if code == 200 and rj.get("recovered"):
+                        continue                     # 下一轮 poll 会看到 succeeded
+                    if code == 202:
+                        time.sleep(self.poll_s); continue
+                    rec["recoverError"] = str(rj.get("reason") or rj)[:200]
             if st in FAILED:
                 rec.update(state="FAILED", error=str(j.get("error") or st)[:300]); self._save(rec)
                 raise Muse2APIError(f"{rec['node']}: 任务失败：{rec['error']}")

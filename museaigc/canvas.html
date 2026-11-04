@@ -181,9 +181,11 @@ function select(id) {
   };
   $('#gen').onclick = async () => {
     try { await save();
-      const send = n.type === 'video' ? confirm('真发一次视频？会消耗 Muse 额度，结果不明时不会重发。') : false;
+      const again = ['重新生成', '再出一张'].includes($('#gen').textContent);
+      const send = n.type === 'video' ? confirm((again ? '重新' : '') + '生成一次视频？会扣 50 分，结果不明时不会重发。') : false;
       if (n.type === 'video' && !send) return;
-      await api('POST', '/api/gen/' + encodeURIComponent(n.id), {send});
+      if (n.type === 'keyframe' && again && !confirm('再出一张首帧？会再扣一次分（img2img 5 分）。')) return;
+      await api('POST', '/api/gen/' + encodeURIComponent(n.id), {send, new: again});
       $('#out').textContent = '生成中…'; pollGen(n);
     } catch (e) { $('#out').textContent = e.message; }
   };
@@ -204,9 +206,28 @@ function select(id) {
   $('#brief').onclick = async () => { $('#out').textContent = JSON.stringify(await api('GET', '/api/brief/' + encodeURIComponent(n.id)), null, 2); };
   $('#pick').onclick = async () => { try { await save(); $('#out').textContent = JSON.stringify(await api('POST', '/api/pick/' + encodeURIComponent(n.id), {file: $('#pickf').value}), null, 2); refresh(); } catch (e) { $('#out').textContent = e.message; } };
 }
+const STAGES = {uploading: '上传参考', generating: '生成中', downloading: '取回结果', queued: '排队', pending: '排队'};
 async function loadCands(n) {
   const j = await api('GET', '/api/candidates/' + encodeURIComponent(n.id));
   $('#gen').disabled = !j.allowGenerate || !['keyframe', 'video'].includes(n.type);
+  const t = j.task, running = j.job && j.job.state === 'running';
+  if ($('#gen') && t && !running) {
+    if (t.state === 'FAILED') $('#gen').textContent = '重新生成';
+    else if (t.state === 'DONE' && n.type === 'keyframe') $('#gen').textContent = '再出一张';
+  }
+  let info = '';
+  if (t) {
+    info = `第 ${t.attempt} 次 · ${running ? (STAGES[t.stage] || STAGES[t.status] || '进行中') : ({DONE: '完成', FAILED: '失败', SUBMITTED: '已提交', SUBMITTING: '提交中'}[t.state] || t.state)}`
+      + (t.cost_points != null ? ` · 扣 ${t.cost_points} 分` : '') + (t.width ? ` · ${t.width}×${t.height}` : '')
+      + (t.state === 'FAILED' && t.error ? `<br><span style="color:#e88">${esc(t.error)}</span>` : '');
+    if (running) info += ' <button id="cancel">取消</button>';
+  }
+  const ti = $('#taskinfo') || (() => { const d = document.createElement('div'); d.id = 'taskinfo'; d.style.cssText = 'margin:6px 0;color:#9ab;font-size:12px'; $('#cands').before(d); return d; })();
+  ti.innerHTML = info;
+  if ($('#cancel')) $('#cancel').onclick = async () => {
+    if (!confirm('取消这个任务？排队中的会立即取消；正在生成的会在当前步骤结束后停下，不扣分。')) return;
+    try { await api('POST', '/api/cancel/' + encodeURIComponent(n.id)); msg('已请求取消'); } catch (e) { msg(e.message); }
+  };
   $('#cands').innerHTML = (j.candidates || []).map(c => `<div style="margin-top:6px"><img src="/files/${c.file}" style="width:100%"><button data-pick="${c.file}">选这张</button> <button data-rej="${c.file}">否掉</button> <small>${c.sha256.slice(0, 12)}</small></div>`).join('');
   $('#cands').querySelectorAll('[data-pick]').forEach(b => b.onclick = async () => {
     try { $('#out').textContent = JSON.stringify(await api('POST', '/api/pick/' + encodeURIComponent(n.id), {file: b.dataset.pick}), null, 2);
