@@ -22,21 +22,21 @@ def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=No
 
     gen_slots = threading.BoundedSemaphore(2)   # 同时最多 2 个生成，低于服务端 max_running
 
-    def _gen(nid: str, send: bool):
+    def _gen(nid: str, send: bool, new: bool = False):
         with gen_slots:
             try:
                 g = Graph.load(gp())
                 tasks = tasks_factory(g) if tasks_factory else None
-                jobs[nid] = {"state": "done", "result": g.generate(nid, tasks=tasks, send=send)}
+                jobs[nid] = {"state": "done", "result": g.generate(nid, tasks=tasks, send=send, new_attempt=new)}
             except Exception as e:  # noqa: BLE001 — 结果回给画布
                 jobs[nid] = {"state": "error", "error": str(e)}
 
-    def start_gen(nid: str, send: bool) -> bool:
+    def start_gen(nid: str, send: bool, new: bool = False) -> bool:
         """已在跑/排队就不重复起。返回是否新起了任务。"""
         if (jobs.get(nid) or {}).get("state") in ("running", "queued"):
             return False
         jobs[nid] = {"state": "running"}
-        threading.Thread(target=_gen, args=(nid, send), daemon=True).start()
+        threading.Thread(target=_gen, args=(nid, send, new), daemon=True).start()
         return True
 
     class H(BaseHTTPRequestHandler):
@@ -92,7 +92,19 @@ def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=No
                     c = g.candidates(nid)
                 except Exception:
                     c = []
-                return self._json(200, {"candidates": c, "job": jobs.get(nid), "allowGenerate": allow_generate})
+                task = None
+                try:
+                    from .muse2api import TaskRunner
+                    recs = TaskRunner(g).records(nid)
+                    if recs:
+                        r = recs[-1]
+                        task = {k: r.get(k) for k in ("attempt", "state", "status", "stage", "cost_points", "width",
+                                                      "height", "error", "lastError", "retryable", "recoverError")}
+                        task["attempts"] = len(recs)
+                except Exception:  # noqa: BLE001
+                    pass
+                return self._json(200, {"candidates": c, "job": jobs.get(nid), "task": task,
+                                        "allowGenerate": allow_generate})
             if u.path.startswith("/api/brief/"):
                 return self._json(200, self._graph().brief(unquote(u.path[11:])))
             if u.path.startswith("/files/"):
@@ -142,10 +154,19 @@ def make_handler(graph_path: str, allow_generate: bool = False, tasks_factory=No
                         nid = unquote(u.path[9:])
                         if not allow_generate:
                             return self._json(403, {"error": "画布未开启生成：用 graph serve --allow-generate 启动"})
-                        send = bool(self._body().get("send"))
-                        if not start_gen(nid, send):
+                        b = self._body()
+                        send = bool(b.get("send"))
+                        if not start_gen(nid, send, bool(b.get("new"))):
                             return self._json(409, {"error": "该节点正在生成"})
                         return self._json(202, {"state": "running"})
+                    if u.path.startswith("/api/cancel/"):
+                        from .muse2api import Client, TaskRunner
+                        nid = unquote(u.path[12:])
+                        runner = tasks_factory(g) if tasks_factory else TaskRunner(g, Client(api="open"))
+                        recs = runner.records(nid)
+                        if not recs or recs[-1].get("state") != "SUBMITTED":
+                            return self._json(409, {"error": "这个节点没有进行中的任务"})
+                        return self._json(200, runner.client.cancel(recs[-1]["taskId"]))
                     if u.path.startswith("/api/pick/"):
                         return self._json(200, g.pick(unquote(u.path[10:]), self._body()["file"]))
                 except GraphError as e:
